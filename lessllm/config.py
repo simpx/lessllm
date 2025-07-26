@@ -5,7 +5,11 @@ Configuration management system for LessLLM
 import os
 import yaml
 from typing import Dict, Any, Optional
-from pydantic import BaseSettings, BaseModel
+from pydantic import BaseModel
+try:
+    from pydantic_settings import BaseSettings
+except ImportError:
+    from pydantic import BaseSettings
 from pathlib import Path
 
 
@@ -47,9 +51,11 @@ class Config(BaseSettings):
     analysis: AnalysisConfig = AnalysisConfig()
     server: ServerConfig = ServerConfig()
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    model_config = {
+        "env_file": ".env",
+        "case_sensitive": False,
+        "extra": "ignore"  # 允许并忽略额外字段
+    }
         
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "Config":
@@ -72,9 +78,14 @@ class Config(BaseSettings):
             return {k: Config._replace_env_vars(v) for k, v in data.items()}
         elif isinstance(data, list):
             return [Config._replace_env_vars(item) for item in data]
-        elif isinstance(data, str) and data.startswith("${") and data.endswith("}"):
-            env_var = data[2:-1]
-            return os.getenv(env_var, data)
+        elif isinstance(data, str):
+            import re
+            # 支持 ${VAR} 和 ${VAR}_suffix 格式
+            def replace_env_var(match):
+                env_var = match.group(1)
+                return os.getenv(env_var, match.group(0))
+            
+            return re.sub(r'\$\{([^}]+)\}', replace_env_var, data)
         return data
     
     def to_dict(self) -> Dict[str, Any]:

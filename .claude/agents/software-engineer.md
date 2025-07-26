@@ -35,5 +35,6 @@ When providing solutions:
 - Include implementation details and potential pitfalls
 - Consider the team's skill level and project timeline
 - Suggest incremental improvement paths for legacy systems
+- Try to do git commit when a small feature is done
 
 Always strive for excellence while remaining pragmatic about real-world constraints and deadlines.
