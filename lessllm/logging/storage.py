@@ -171,10 +171,17 @@ class LogStorage:
         try:
             with duckdb.connect(self.db_path) as conn:
                 if params:
-                    result = conn.execute(sql, params).fetchdf()
+                    cursor = conn.execute(sql, params)
                 else:
-                    result = conn.execute(sql).fetchdf()
-                return result.to_dict('records')
+                    cursor = conn.execute(sql)
+                
+                # 获取列名
+                columns = [desc[0] for desc in cursor.description]
+                # 获取数据
+                rows = cursor.fetchall()
+                
+                # 转换为字典列表
+                return [dict(zip(columns, row)) for row in rows]
         except Exception as e:
             logger.error(f"Query failed: {e}")
             raise
@@ -184,8 +191,8 @@ class LogStorage:
                             provider: Optional[str] = None,
                             days: int = 7) -> Dict[str, Any]:
         """获取性能统计"""
-        where_conditions = ["timestamp >= current_date - INTERVAL ? DAY"]
-        params = [days]
+        where_conditions = [f"timestamp >= current_date - INTERVAL {days} DAY"]
+        params = []
         
         if model:
             where_conditions.append("model = ?")
@@ -217,7 +224,7 @@ class LogStorage:
     
     def get_cache_analysis_summary(self, days: int = 7) -> Dict[str, Any]:
         """获取缓存分析摘要"""
-        sql = """
+        sql = f"""
             SELECT 
                 COUNT(*) as total_predictions,
                 AVG(prediction_error) as avg_prediction_error,
@@ -227,10 +234,10 @@ class LogStorage:
                 AVG(estimated_cache_hit_rate) as avg_estimated_hit_rate,
                 AVG(actual_cache_hit_rate) as avg_actual_hit_rate
             FROM cache_analysis_comparison
-            WHERE timestamp >= current_date - INTERVAL ? DAY
+            WHERE timestamp >= current_date - INTERVAL {days} DAY
         """
         
-        results = self.query(sql, [days])
+        results = self.query(sql)
         summary = results[0] if results else {}
         
         # 计算准确性百分比
@@ -306,12 +313,18 @@ class LogStorage:
     
     def cleanup_old_logs(self, days_to_keep: int = 30):
         """清理旧日志记录"""
-        sql = "DELETE FROM api_calls WHERE timestamp < current_date - INTERVAL ? DAY"
+        # 先查询要删除的记录数
+        count_sql = f"SELECT COUNT(*) FROM api_calls WHERE timestamp < current_date - INTERVAL {days_to_keep} DAY"
+        delete_sql = f"DELETE FROM api_calls WHERE timestamp < current_date - INTERVAL {days_to_keep} DAY"
         
         try:
             with duckdb.connect(self.db_path) as conn:
-                result = conn.execute(sql, [days_to_keep])
-                deleted_count = result.fetchone()[0] if result else 0
+                # 先查询数量
+                count_result = conn.execute(count_sql).fetchone()
+                deleted_count = count_result[0] if count_result else 0
+                
+                # 执行删除
+                conn.execute(delete_sql)
             
             logger.info(f"Cleaned up {deleted_count} old log records")
             return deleted_count
