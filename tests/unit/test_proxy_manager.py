@@ -213,7 +213,13 @@ class TestProxyConnectivity:
         mock_response.status_code = 200
         mock_response.elapsed.total_seconds.return_value = 0.5
         mock_client.get.return_value = mock_response
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        
+        # 使用MagicMock来支持上下文管理器
+        from unittest.mock import MagicMock
+        mock_context_manager = MagicMock()
+        mock_context_manager.__enter__.return_value = mock_client
+        mock_context_manager.__exit__.return_value = None
+        mock_client_class.return_value = mock_context_manager
         
         config = ProxyConfig(socks_proxy="socks5://127.0.0.1:1080")
         manager = ProxyManager(config)
@@ -232,7 +238,13 @@ class TestProxyConnectivity:
         # 设置mock抛出超时异常
         mock_client = Mock()
         mock_client.get.side_effect = httpx.TimeoutException("Timeout")
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        
+        # 使用MagicMock来支持上下文管理器
+        from unittest.mock import MagicMock
+        mock_context_manager = MagicMock()
+        mock_context_manager.__enter__.return_value = mock_client
+        mock_context_manager.__exit__.return_value = None
+        mock_client_class.return_value = mock_context_manager
         
         config = ProxyConfig(
             http_proxy="http://proxy.test:8080",
@@ -253,7 +265,13 @@ class TestProxyConnectivity:
         # 设置mock抛出代理错误
         mock_client = Mock()
         mock_client.get.side_effect = httpx.ProxyError("Proxy connection failed")
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        
+        # 使用MagicMock来支持上下文管理器
+        from unittest.mock import MagicMock
+        mock_context_manager = MagicMock()
+        mock_context_manager.__enter__.return_value = mock_client
+        mock_context_manager.__exit__.return_value = None
+        mock_client_class.return_value = mock_context_manager
         
         config = ProxyConfig(socks_proxy="socks5://invalid:1080")
         manager = ProxyManager(config)
@@ -270,7 +288,13 @@ class TestProxyConnectivity:
         # 设置mock抛出其他异常
         mock_client = Mock()
         mock_client.get.side_effect = Exception("Unexpected error")
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        
+        # 使用MagicMock来支持上下文管理器
+        from unittest.mock import MagicMock
+        mock_context_manager = MagicMock()
+        mock_context_manager.__enter__.return_value = mock_client
+        mock_context_manager.__exit__.return_value = None
+        mock_client_class.return_value = mock_context_manager
         
         config = ProxyConfig()
         manager = ProxyManager(config)
@@ -289,7 +313,13 @@ class TestProxyConnectivity:
         mock_response.status_code = 200
         mock_response.elapsed.total_seconds.return_value = 0.3
         mock_client.get.return_value = mock_response
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        
+        # 使用MagicMock来支持上下文管理器
+        from unittest.mock import MagicMock
+        mock_context_manager = MagicMock()
+        mock_context_manager.__enter__.return_value = mock_client
+        mock_context_manager.__exit__.return_value = None
+        mock_client_class.return_value = mock_context_manager
         
         config = ProxyConfig()
         manager = ProxyManager(config)

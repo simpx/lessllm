@@ -126,16 +126,25 @@ class TestOpenAIProvider:
             yield "data: [DONE]"
         
         with patch.object(provider, 'get_client') as mock_get_client:
-            mock_client = AsyncMock()
             mock_response = AsyncMock()
             mock_response.status_code = 200
-            mock_response.aiter_lines.return_value = mock_aiter_lines()
+            mock_response.aiter_lines = Mock(return_value=mock_aiter_lines())
+            mock_response.raise_for_status = Mock()
             
-            # 模拟context manager
-            mock_stream_context = AsyncMock()
-            mock_stream_context.__aenter__.return_value = mock_response
-            mock_client.stream.return_value = mock_stream_context
+            # Create a proper async context manager
+            class AsyncStreamContextManager:
+                def __init__(self, response):
+                    self.response = response
+                    
+                async def __aenter__(self):
+                    return self.response
+                    
+                async def __aexit__(self, exc_type, exc_val, exc_tb):
+                    return None
             
+            mock_client = AsyncMock()
+            # Make stream method return our context manager (use Mock instead of AsyncMock)
+            mock_client.stream = Mock(return_value=AsyncStreamContextManager(mock_response))
             mock_get_client.return_value = mock_client
             
             chunks = []
@@ -159,15 +168,25 @@ class TestOpenAIProvider:
             yield "data: [DONE]"
         
         with patch.object(provider, 'get_client') as mock_get_client:
-            mock_client = AsyncMock()
             mock_response = AsyncMock()
             mock_response.status_code = 200
-            mock_response.aiter_lines.return_value = mock_aiter_lines()
+            mock_response.aiter_lines = Mock(return_value=mock_aiter_lines())
+            mock_response.raise_for_status = Mock()
             
-            mock_stream_context = AsyncMock()
-            mock_stream_context.__aenter__.return_value = mock_response
-            mock_client.stream.return_value = mock_stream_context
+            # Create a proper async context manager
+            class AsyncStreamContextManager:
+                def __init__(self, response):
+                    self.response = response
+                    
+                async def __aenter__(self):
+                    return self.response
+                    
+                async def __aexit__(self, exc_type, exc_val, exc_tb):
+                    return None
             
+            mock_client = AsyncMock()
+            # Make stream method return our context manager (use Mock instead of AsyncMock)
+            mock_client.stream = Mock(return_value=AsyncStreamContextManager(mock_response))
             mock_get_client.return_value = mock_client
             
             chunks = []

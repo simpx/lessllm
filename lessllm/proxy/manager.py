@@ -40,16 +40,30 @@ class ProxyManager:
         
         # 合并默认配置和用户配置
         client_config = {
-            "proxies": proxies,
-            "auth": auth,
             "timeout": self.timeout,
             "limits": httpx.Limits(max_connections=10, max_keepalive_connections=5),
             "follow_redirects": True,
             **kwargs  # 允许用户覆盖默认配置
         }
         
+        # 添加代理配置（如果有）- 注意新版本httpx使用proxies参数
+        if proxies:
+            client_config["proxies"] = proxies
+            
+        # 添加认证配置（如果有）
+        if auth:
+            client_config["auth"] = auth
+        
         logger.debug(f"Creating httpx client with proxy config: {proxies}")
-        return httpx.AsyncClient(**client_config)
+        try:
+            return httpx.AsyncClient(**client_config)
+        except TypeError as e:
+            # 如果proxies参数不被支持，则去掉proxies参数重试
+            if "proxies" in str(e) and "proxies" in client_config:
+                logger.warning(f"Proxies not supported in httpx client init, removing proxies parameter: {e}")
+                client_config.pop("proxies", None)
+                return httpx.AsyncClient(**client_config)
+            raise
     
     def _build_proxy_config(self) -> Optional[Dict[str, str]]:
         """构建代理配置"""
