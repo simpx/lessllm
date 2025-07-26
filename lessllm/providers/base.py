@@ -80,6 +80,9 @@ class BaseProvider(ABC):
     def get_endpoint_url(self, endpoint: str) -> str:
         """获取完整的端点URL"""
         if self.base_url:
+            # 阿里云代理需要/v1/messages后缀
+            if "aliyuncs.com" in self.base_url:
+                return f"{self.base_url.rstrip('/')}/v1/{endpoint.lstrip('/')}"
             return f"{self.base_url.rstrip('/')}/{endpoint.lstrip('/')}"
         return self.get_default_base_url() + "/" + endpoint.lstrip('/')
     
