@@ -1,0 +1,43 @@
+# LessLLM Configuration Example
+
+proxy:
+  # HTTP代理配置
+  # http_proxy: "http://proxy.company.com:8080"
+  
+  # SOCKS代理配置 (取消注释以启用)
+  # socks_proxy: "socks5://127.0.0.1:1080"
+  
+  # 代理认证 (如果需要)
+  # auth:
+  #   username: "${PROXY_USER}"
+  #   password: "${PROXY_PASS}"
+  
+  timeout: 30
+
+providers:
+  # OpenAI 配置
+  openai:
+    api_key: "${OPENAI_API_KEY}"  # 设置环境变量 OPENAI_API_KEY
+    base_url: "https://api.openai.com/v1"
+    
+  # Claude 配置
+  claude:
+    api_key: "${ANTHROPIC_API_KEY}"  # 设置环境变量 ANTHROPIC_API_KEY
+    base_url: "https://api.anthropic.com/v1"
+
+logging:
+  enabled: true
+  level: "INFO"
+  storage:
+    type: "duckdb"
+    db_path: "./lessllm_logs.db"
+
+analysis:
+  enable_cache_estimation: true
+  enable_performance_tracking: true
+  cache_estimation_accuracy_threshold: 0.8
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1
