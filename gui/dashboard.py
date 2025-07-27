@@ -63,6 +63,123 @@ def format_time_ms(value):
     else:
         return f"{value:.0f}ms"
 
+def show_request_details(storage, request_id):
+    """显示请求详情"""
+    st.markdown("### 🔍 请求详情")
+    st.info(f"当前查看：{request_id} (点击表格其他行可切换)")
+    
+    # 查询完整的请求详情
+    detail_sql = "SELECT * FROM api_calls WHERE request_id = ?"
+    detail_result = storage.query(detail_sql, [request_id])
+    
+    if detail_result:
+        detail = detail_result[0]
+        
+        # 基本信息
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("请求ID", detail['request_id'])
+            st.metric("提供商", detail['provider'])
+        with col2:
+            st.metric("模型", detail['model'])
+            st.metric("状态", "✅ 成功" if detail['success'] else "❌ 失败")
+        with col3:
+            st.metric("代理", detail['proxy_used'] or "直连")
+            if detail['error_message']:
+                st.error(f"错误: {detail['error_message']}")
+        
+        # 详细数据展示
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 请求数据", "📥 响应数据", "🌐 HTTP 详情", "📊 性能指标", "💰 成本分析"])
+        
+        with tab1:
+            st.markdown("**原始请求数据:**")
+            if detail['raw_request']:
+                try:
+                    request_data = json.loads(detail['raw_request'])
+                    st.json(request_data)
+                except:
+                    st.text(detail['raw_request'])
+            else:
+                st.info("无请求数据")
+        
+        with tab2:
+            st.markdown("**原始响应数据:**")
+            if detail['raw_response']:
+                try:
+                    response_data = json.loads(detail['raw_response'])
+                    st.json(response_data)
+                except:
+                    st.text(detail['raw_response'])
+            else:
+                st.info("无响应数据")
+        
+        with tab3:
+            st.markdown("**HTTP 请求详情:**")
+            
+            # 基本请求信息
+            req_col1, req_col2 = st.columns(2)
+            with req_col1:
+                st.metric("请求方法", detail.get('request_method', 'N/A'))
+                st.metric("客户端 IP", detail.get('client_ip', 'N/A'))
+                st.metric("状态码", detail.get('response_status_code', 'N/A'))
+            with req_col2:
+                st.metric("响应大小", f"{detail.get('response_size_bytes', 0)} bytes" if detail.get('response_size_bytes') else 'N/A')
+                st.metric("上游状态码", detail.get('upstream_status_code', 'N/A'))
+                st.metric("上游 URL", detail.get('upstream_url', 'N/A'))
+            
+            # 请求头
+            st.markdown("**请求头:**")
+            if detail.get('request_headers'):
+                try:
+                    request_headers = json.loads(detail['request_headers']) if isinstance(detail['request_headers'], str) else detail['request_headers']
+                    st.json(request_headers)
+                except:
+                    st.text(str(detail['request_headers']))
+            else:
+                st.info("无请求头数据")
+            
+            # 响应头
+            st.markdown("**响应头:**")
+            if detail.get('response_headers'):
+                try:
+                    response_headers = json.loads(detail['response_headers']) if isinstance(detail['response_headers'], str) else detail['response_headers']
+                    st.json(response_headers)
+                except:
+                    st.text(str(detail['response_headers']))
+            else:
+                st.info("无响应头数据")
+        
+        with tab4:
+            perf_col1, perf_col2 = st.columns(2)
+            with perf_col1:
+                st.metric("首字节时间 (TTFT)", format_time_ms(detail['estimated_ttft_ms']))
+                st.metric("每token时间 (TPOT)", format_time_ms(detail['estimated_tpot_ms']))
+            with perf_col2:
+                st.metric("总延迟", format_time_ms(detail['estimated_total_latency_ms']))
+                st.metric("吞吐量", f"{detail['estimated_tokens_per_second']:.1f} tokens/s" if detail['estimated_tokens_per_second'] else "N/A")
+            
+            # 缓存信息
+            if detail['estimated_cache_hit_rate'] is not None:
+                cache_col1, cache_col2 = st.columns(2)
+                with cache_col1:
+                    st.metric("估算缓存命中率", f"{detail['estimated_cache_hit_rate']:.1%}")
+                    st.metric("估算缓存Token", detail['estimated_cached_tokens'])
+                with cache_col2:
+                    if detail['actual_cache_hit_rate'] is not None:
+                        st.metric("实际缓存命中率", f"{detail['actual_cache_hit_rate']:.1%}")
+                        st.metric("实际缓存Token", detail['actual_cached_tokens'])
+        
+        with tab5:
+            cost_col1, cost_col2 = st.columns(2)
+            with cost_col1:
+                st.metric("估算成本", format_currency(detail['estimated_cost_usd']))
+                st.metric("输入Token", detail['actual_prompt_tokens'] or "N/A")
+            with cost_col2:
+                st.metric("输出Token", detail['actual_completion_tokens'] or "N/A")
+                st.metric("总Token", detail['actual_total_tokens'] or "N/A")
+    else:
+        st.error("找不到请求详情")
+
 def main():
     st.set_page_config(
         page_title="LessLLM Analytics Dashboard",
@@ -142,164 +259,6 @@ def main():
     col4.metric("总成本", format_currency(total_cost))
     col5.metric("总Token", f"{total_tokens:,}")
     
-    # 创建紧凑的两行布局
-    # 第一行：性能统计和缓存分析
-    st.markdown("### 性能与缓存")
-    perf_col, cache_col = st.columns(2)
-    
-    with perf_col:
-        if not df[df['success'] == True].empty:
-            successful_df = df[df['success'] == True]
-            
-            # TTFT和TPOT分布（并排显示）
-            ttft_tpot_col1, ttft_tpot_col2 = st.columns(2)
-            
-            with ttft_tpot_col1:
-                fig_ttft = px.histogram(
-                    successful_df, 
-                    x='estimated_ttft_ms', 
-                    title="TTFT分布",
-                    labels={'estimated_ttft_ms': 'TTFT (ms)'}
-                )
-                fig_ttft.update_layout(
-                    margin=dict(l=10, r=10, t=30, b=10),
-                    height=200
-                )
-                st.plotly_chart(fig_ttft, use_container_width=True, config={'displayModeBar': False})
-            
-            with ttft_tpot_col2:
-                fig_tpot = px.histogram(
-                    successful_df,
-                    x='estimated_tpot_ms',
-                    title="TPOT分布",
-                    labels={'estimated_tpot_ms': 'TPOT (ms)'}
-                )
-                fig_tpot.update_layout(
-                    margin=dict(l=10, r=10, t=30, b=10),
-                    height=200
-                )
-                st.plotly_chart(fig_tpot, use_container_width=True, config={'displayModeBar': False})
-            
-            # 模型性能对比
-            model_perf = successful_df.groupby('model').agg({
-                'estimated_ttft_ms': 'mean',
-                'estimated_tpot_ms': 'mean',
-                'estimated_total_latency_ms': 'mean'
-            }).reset_index()
-            
-            # 转换数据类型确保一致性
-            numeric_columns = ['estimated_ttft_ms', 'estimated_tpot_ms', 'estimated_total_latency_ms']
-            for col in numeric_columns:
-                model_perf[col] = pd.to_numeric(model_perf[col], errors='coerce')
-            
-            # 使用长格式数据
-            model_perf_melted = model_perf.melt(
-                id_vars=['model'],
-                value_vars=['estimated_ttft_ms', 'estimated_tpot_ms', 'estimated_total_latency_ms'],
-                var_name='metric',
-                value_name='value'
-            )
-            fig_model_perf = px.bar(
-                model_perf_melted,
-                x='model',
-                y='value',
-                color='metric',
-                title="模型性能对比",
-                barmode='group'
-            )
-            fig_model_perf.update_layout(
-                margin=dict(l=10, r=10, t=30, b=10),
-                height=250,
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1
-                )
-            )
-            st.plotly_chart(fig_model_perf, use_container_width=True, config={'displayModeBar': False})
-    
-    with cache_col:
-        # 过滤有缓存数据的记录
-        cache_df = df[(df['success'] == True) & (df['actual_cache_hit_rate'].notna())]
-        
-        if not cache_df.empty:
-            # 缓存命中率分布
-            fig_cache_rate = px.histogram(
-                cache_df,
-                x='actual_cache_hit_rate',
-                title="缓存命中率分布",
-                labels={'actual_cache_hit_rate': '命中率'}
-            )
-            fig_cache_rate.update_xaxes(range=[0, 1])
-            fig_cache_rate.update_layout(
-                margin=dict(l=10, r=10, t=30, b=10),
-                height=200
-            )
-            st.plotly_chart(fig_cache_rate, use_container_width=True, config={'displayModeBar': False})
-            
-            # 估算vs实际缓存命中率对比
-            fig_cache_compare = px.scatter(
-                cache_df,
-                x='estimated_cache_hit_rate',
-                y='actual_cache_hit_rate',
-                title="估算vs实际命中率",
-                labels={
-                    'estimated_cache_hit_rate': '估算',
-                    'actual_cache_hit_rate': '实际'
-                }
-            )
-            fig_cache_compare.add_shape(
-                type='line',
-                x0=0, x1=1, y0=0, y1=1,
-                line=dict(color='red', dash='dash')
-            )
-            fig_cache_compare.update_layout(
-                margin=dict(l=10, r=10, t=30, b=10),
-                height=250
-            )
-            st.plotly_chart(fig_cache_compare, use_container_width=True, config={'displayModeBar': False})
-    
-    # 第二行：成本分析和模型使用情况
-    st.markdown("### 成本与使用")
-    cost_col, usage_col = st.columns(2)
-    
-    with cost_col:
-        # 按模型分组的成本统计
-        cost_by_model = df.groupby('model').agg({
-            'estimated_cost_usd': 'sum',
-            'actual_total_tokens': 'sum'
-        }).reset_index()
-        
-        if not cost_by_model.empty:
-            # 模型成本分布
-            fig_cost_model = px.pie(
-                cost_by_model,
-                values='estimated_cost_usd',
-                names='model',
-                title="成本分布"
-            )
-            fig_cost_model.update_layout(
-                margin=dict(l=10, r=10, t=30, b=10),
-                height=250
-            )
-            st.plotly_chart(fig_cost_model, use_container_width=True, config={'displayModeBar': False})
-    
-    with usage_col:
-        model_usage = df.groupby('model').size().reset_index(name='count')
-        fig_model_usage = px.pie(
-            model_usage,
-            values='count',
-            names='model',
-            title="使用分布"
-        )
-        fig_model_usage.update_layout(
-            margin=dict(l=10, r=10, t=30, b=10),
-            height=250
-        )
-        st.plotly_chart(fig_model_usage, use_container_width=True, config={'displayModeBar': False})
-    
     # 最近日志
     st.markdown("### 最近请求")
     
@@ -315,177 +274,47 @@ def main():
     log_df['estimated_cost_usd'] = log_df['estimated_cost_usd'].apply(format_currency)
     log_df['estimated_ttft_ms'] = log_df['estimated_ttft_ms'].apply(format_time_ms)
     
-    # 显示最近20条记录
+    # 显示最近20条记录，启用行选择
     recent_df = log_df.tail(20).reset_index(drop=True)
     
-    # 显示数据表格
-    st.dataframe(
-        recent_df, 
-        use_container_width=True, 
-        height=300,
-        column_config={
-            "timestamp": "时间",
-            "request_id": "请求ID", 
-            "provider": "提供商",
-            "model": "模型",
-            "success": "成功",
-            "estimated_ttft_ms": "TTFT",
-            "actual_total_tokens": "Tokens",
-            "estimated_cost_usd": "成本"
-        }
-    )
-    
-    # 添加请求ID选择器来查看详情
-    st.markdown("### 🔍 查看请求详情")
-    
     if not recent_df.empty:
-        request_ids = recent_df['request_id'].tolist()
+        # 使用简单的selectbox来选择请求
+        st.markdown("**点击下方选择要查看详情的请求：**")
+        
+        # 创建选项列表，显示时间戳和请求ID
+        options = []
+        for idx, row in recent_df.iterrows():
+            display_text = f"{row['timestamp']} - {row['request_id']} ({row['model']})"
+            options.append((row['request_id'], display_text))
+        
         selected_request_id = st.selectbox(
-            "选择请求ID查看详情",
-            options=request_ids,
+            "选择请求",
+            options,
+            format_func=lambda x: x[1],
             index=0,
-            key="request_detail_selector"
+            key="request_selector"
+        )[0]
+        
+        # 显示数据表格（仅用于展示）
+        st.dataframe(
+            recent_df, 
+            use_container_width=True, 
+            height=300,
+            column_config={
+                "timestamp": "时间",
+                "request_id": "请求ID", 
+                "provider": "提供商",
+                "model": "模型",
+                "success": "成功",
+                "estimated_ttft_ms": "TTFT",
+                "actual_total_tokens": "Tokens",
+                "estimated_cost_usd": "成本"
+            }
         )
         
+        # 显示选中请求的详情
         if selected_request_id:
-            # 查询完整的请求详情
-            detail_sql = "SELECT * FROM api_calls WHERE request_id = ?"
-            detail_result = storage.query(detail_sql, [selected_request_id])
-            
-            if detail_result:
-                detail = detail_result[0]
-                
-                st.markdown("### 📋 请求详情")
-                
-                # 基本信息
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("请求ID", detail['request_id'])
-                    st.metric("提供商", detail['provider'])
-                with col2:
-                    st.metric("模型", detail['model'])
-                    st.metric("状态", "✅ 成功" if detail['success'] else "❌ 失败")
-                with col3:
-                    st.metric("代理", detail['proxy_used'] or "直连")
-                    if detail['error_message']:
-                        st.error(f"错误: {detail['error_message']}")
-                
-                # 详细数据展示
-                tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 请求数据", "📥 响应数据", "🌐 HTTP 详情", "📊 性能指标", "💰 成本分析"])
-                
-                with tab1:
-                    st.markdown("**原始请求数据:**")
-                    if detail['raw_request']:
-                        try:
-                            request_data = json.loads(detail['raw_request'])
-                            st.json(request_data)
-                        except:
-                            st.text(detail['raw_request'])
-                    else:
-                        st.info("无请求数据")
-                
-                with tab2:
-                    st.markdown("**原始响应数据:**")
-                    if detail['raw_response']:
-                        try:
-                            response_data = json.loads(detail['raw_response'])
-                            st.json(response_data)
-                        except:
-                            st.text(detail['raw_response'])
-                    else:
-                        st.info("无响应数据")
-                
-                with tab3:
-                    st.markdown("**HTTP 请求详情:**")
-                    
-                    # 基本请求信息
-                    req_col1, req_col2 = st.columns(2)
-                    with req_col1:
-                        st.metric("请求方法", detail.get('request_method', 'N/A'))
-                        st.metric("客户端 IP", detail.get('client_ip', 'N/A'))
-                        st.metric("状态码", detail.get('response_status_code', 'N/A'))
-                    with req_col2:
-                        st.metric("响应大小", f"{detail.get('response_size_bytes', 0)} bytes" if detail.get('response_size_bytes') else 'N/A')
-                        st.metric("上游状态码", detail.get('upstream_status_code', 'N/A'))
-                        st.metric("上游 URL", detail.get('upstream_url', 'N/A'))
-                    
-                    # 请求头
-                    st.markdown("**请求头:**")
-                    if detail.get('request_headers'):
-                        try:
-                            request_headers = json.loads(detail['request_headers']) if isinstance(detail['request_headers'], str) else detail['request_headers']
-                            st.json(request_headers)
-                        except:
-                            st.text(str(detail['request_headers']))
-                    else:
-                        st.info("无请求头数据")
-                    
-                    # 响应头
-                    st.markdown("**响应头:**")
-                    if detail.get('response_headers'):
-                        try:
-                            response_headers = json.loads(detail['response_headers']) if isinstance(detail['response_headers'], str) else detail['response_headers']
-                            st.json(response_headers)
-                        except:
-                            st.text(str(detail['response_headers']))
-                    else:
-                        st.info("无响应头数据")
-                    
-                    # 上游请求/响应头
-                    if detail.get('upstream_request_headers') or detail.get('upstream_response_headers'):
-                        st.markdown("**上游 HTTP 详情:**")
-                        upstream_col1, upstream_col2 = st.columns(2)
-                        
-                        with upstream_col1:
-                            st.markdown("**上游请求头:**")
-                            if detail.get('upstream_request_headers'):
-                                try:
-                                    upstream_req_headers = json.loads(detail['upstream_request_headers']) if isinstance(detail['upstream_request_headers'], str) else detail['upstream_request_headers']
-                                    st.json(upstream_req_headers)
-                                except:
-                                    st.text(str(detail['upstream_request_headers']))
-                            else:
-                                st.info("无上游请求头")
-                        
-                        with upstream_col2:
-                            st.markdown("**上游响应头:**")
-                            if detail.get('upstream_response_headers'):
-                                try:
-                                    upstream_resp_headers = json.loads(detail['upstream_response_headers']) if isinstance(detail['upstream_response_headers'], str) else detail['upstream_response_headers']
-                                    st.json(upstream_resp_headers)
-                                except:
-                                    st.text(str(detail['upstream_response_headers']))
-                            else:
-                                st.info("无上游响应头")
-                
-                with tab4:
-                    perf_col1, perf_col2 = st.columns(2)
-                    with perf_col1:
-                        st.metric("首字节时间 (TTFT)", format_time_ms(detail['estimated_ttft_ms']))
-                        st.metric("每token时间 (TPOT)", format_time_ms(detail['estimated_tpot_ms']))
-                    with perf_col2:
-                        st.metric("总延迟", format_time_ms(detail['estimated_total_latency_ms']))
-                        st.metric("吞吐量", f"{detail['estimated_tokens_per_second']:.1f} tokens/s" if detail['estimated_tokens_per_second'] else "N/A")
-                    
-                    # 缓存信息
-                    if detail['estimated_cache_hit_rate'] is not None:
-                        cache_col1, cache_col2 = st.columns(2)
-                        with cache_col1:
-                            st.metric("估算缓存命中率", f"{detail['estimated_cache_hit_rate']:.1%}")
-                            st.metric("估算缓存Token", detail['estimated_cached_tokens'])
-                        with cache_col2:
-                            if detail['actual_cache_hit_rate'] is not None:
-                                st.metric("实际缓存命中率", f"{detail['actual_cache_hit_rate']:.1%}")
-                                st.metric("实际缓存Token", detail['actual_cached_tokens'])
-                
-                with tab5:
-                    cost_col1, cost_col2 = st.columns(2)
-                    with cost_col1:
-                        st.metric("估算成本", format_currency(detail['estimated_cost_usd']))
-                        st.metric("输入Token", detail['actual_prompt_tokens'] or "N/A")
-                    with cost_col2:
-                        st.metric("输出Token", detail['actual_completion_tokens'] or "N/A")
-                        st.metric("总Token", detail['actual_total_tokens'] or "N/A")
+            show_request_details(storage, selected_request_id)
     else:
         st.info("暂无日志数据")
     
@@ -512,40 +341,6 @@ FROM api_calls
 WHERE success = true 
 GROUP BY model 
 ORDER BY request_count DESC""",
-            "缓存命中率分析": """
-SELECT 
-    model,
-    provider,
-    COUNT(*) as total_requests,
-    AVG(estimated_cache_hit_rate) as avg_estimated_hit_rate,
-    AVG(actual_cache_hit_rate) as avg_actual_hit_rate,
-    ABS(AVG(actual_cache_hit_rate) - AVG(estimated_cache_hit_rate)) as prediction_error
-FROM api_calls 
-WHERE actual_cache_hit_rate IS NOT NULL 
-GROUP BY model, provider""",
-            "成本分析": """
-SELECT 
-    DATE(timestamp) as date,
-    model,
-    SUM(estimated_cost_usd) as daily_cost,
-    SUM(actual_total_tokens) as daily_tokens,
-    COUNT(*) as daily_requests
-FROM api_calls 
-WHERE success = true 
-GROUP BY DATE(timestamp), model 
-ORDER BY date DESC, daily_cost DESC""",
-            "错误分析": """
-SELECT 
-    provider,
-    model,
-    error_message,
-    COUNT(*) as error_count,
-    MIN(timestamp) as first_occurrence,
-    MAX(timestamp) as last_occurrence
-FROM api_calls 
-WHERE success = false 
-GROUP BY provider, model, error_message 
-ORDER BY error_count DESC""",
             "最近活动": """
 SELECT 
     timestamp,
