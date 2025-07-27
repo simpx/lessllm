@@ -64,6 +64,38 @@ def format_time_ms(value):
     else:
         return f"{value:.0f}ms"
 
+def format_tokens(value):
+    """格式化token数量显示"""
+    if pd.isna(value) or value == 0:
+        return "0"
+    elif value is None:
+        return "N/A"
+    else:
+        return f"{int(value):,}"
+
+def format_cache_rate(value):
+    """格式化缓存命中率显示"""
+    if pd.isna(value) or value is None:
+        return "N/A"
+    else:
+        return f"{value:.1%}"
+
+def format_tokens_per_second(value):
+    """格式化吞吐量显示"""
+    if pd.isna(value) or value is None:
+        return "N/A"
+    else:
+        return f"{value:.1f} t/s"
+
+def format_success_status(value):
+    """格式化成功状态显示"""
+    if pd.isna(value):
+        return "Unknown"
+    elif value:
+        return "✅"
+    else:
+        return "❌"
+
 def show_request_details(storage, request_id):
     """显示请求详情"""
     # 查询完整的请求详情
@@ -250,30 +282,138 @@ def main():
     successful_requests = len(df[df['success'] == True])
     success_rate = (successful_requests / total_requests * 100) if total_requests > 0 else 0
     total_cost = df['estimated_cost_usd'].sum()
-    total_tokens = df['actual_total_tokens'].sum()
     
-    # 使用紧凑的指标布局
+    # Token统计
+    total_input_tokens = df['actual_prompt_tokens'].sum()
+    total_output_tokens = df['actual_completion_tokens'].sum()  
+    total_tokens = df['actual_total_tokens'].sum()
+    total_cached_tokens = df['actual_cached_tokens'].sum()
+    
+    # 性能统计 (只统计成功的请求)
+    success_df = df[df['success'] == True]
+    avg_ttft = success_df['estimated_ttft_ms'].mean() if len(success_df) > 0 else 0
+    avg_tpot = success_df['estimated_tpot_ms'].mean() if len(success_df) > 0 else 0
+    avg_throughput = success_df['estimated_tokens_per_second'].mean() if len(success_df) > 0 else 0
+    avg_cache_rate = success_df['actual_cache_hit_rate'].mean() if len(success_df) > 0 else 0
+    
+    # 第一行：基础指标
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("总请求数", total_requests)
     col2.metric("成功率", f"{success_rate:.1f}%")
     col3.metric("成功数", successful_requests)
     col4.metric("总成本", format_currency(total_cost))
-    col5.metric("总Token", f"{total_tokens:,}")
+    col5.metric("总Token", format_tokens(total_tokens))
+    
+    # 第二行：Token分析
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("输入Token", format_tokens(total_input_tokens))
+    col2.metric("输出Token", format_tokens(total_output_tokens))
+    col3.metric("缓存Token", format_tokens(total_cached_tokens))
+    col4.metric("平均缓存率", format_cache_rate(avg_cache_rate) if not pd.isna(avg_cache_rate) else "N/A")
+    col5.metric("缓存节省", format_currency(total_cached_tokens * 0.0001) if total_cached_tokens > 0 else "$0.00")
+    
+    # 第三行：性能指标
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("平均TTFT", format_time_ms(avg_ttft) if not pd.isna(avg_ttft) else "N/A")
+    col2.metric("平均TPOT", format_time_ms(avg_tpot) if not pd.isna(avg_tpot) else "N/A")
+    col3.metric("平均吞吐量", format_tokens_per_second(avg_throughput) if not pd.isna(avg_throughput) else "N/A")
+    col4.metric("Provider数", len(df['provider'].unique()))
+    col5.metric("模型数", len(df['model'].unique()))
+    
+    # 数据可视化部分
+    if len(success_df) > 0:
+        st.markdown("### 📊 数据分析")
+        
+        viz_col1, viz_col2 = st.columns(2)
+        
+        with viz_col1:
+            # Provider使用分布
+            if 'provider' in success_df.columns:
+                provider_counts = success_df['provider'].value_counts()
+                if len(provider_counts) > 0:
+                    fig_provider = px.pie(
+                        values=provider_counts.values,
+                        names=provider_counts.index,
+                        title="Provider使用分布"
+                    )
+                    fig_provider.update_layout(height=300)
+                    st.plotly_chart(fig_provider, use_container_width=True)
+        
+        with viz_col2:
+            # 成本分布按模型
+            if 'model' in success_df.columns and 'estimated_cost_usd' in success_df.columns:
+                model_costs = success_df.groupby('model')['estimated_cost_usd'].sum().sort_values(ascending=False)
+                if len(model_costs) > 0:
+                    fig_cost = px.bar(
+                        x=model_costs.index,
+                        y=model_costs.values,
+                        title="成本分布（按模型）",
+                        labels={'x': '模型', 'y': '成本 (USD)'}
+                    )
+                    fig_cost.update_layout(height=300)
+                    st.plotly_chart(fig_cost, use_container_width=True)
+        
+        # Token使用趋势（如果有足够的数据）
+        if len(success_df) > 1 and 'timestamp' in success_df.columns:
+            viz_col3, viz_col4 = st.columns(2)
+            
+            with viz_col3:
+                # Token使用趋势
+                time_df = success_df.copy()
+                time_df['timestamp'] = pd.to_datetime(time_df['timestamp'])
+                time_df = time_df.sort_values('timestamp')
+                
+                if len(time_df) > 1:
+                    fig_tokens = px.line(
+                        time_df,
+                        x='timestamp',
+                        y='actual_total_tokens',
+                        title="Token使用趋势",
+                        labels={'timestamp': '时间', 'actual_total_tokens': 'Token数量'}
+                    )
+                    fig_tokens.update_layout(height=300)
+                    st.plotly_chart(fig_tokens, use_container_width=True)
+            
+            with viz_col4:
+                # 性能趋势 (TTFT)
+                if 'estimated_ttft_ms' in time_df.columns:
+                    fig_perf = px.line(
+                        time_df,
+                        x='timestamp',
+                        y='estimated_ttft_ms',
+                        title="TTFT性能趋势",
+                        labels={'timestamp': '时间', 'estimated_ttft_ms': 'TTFT (ms)'}
+                    )
+                    fig_perf.update_layout(height=300)
+                    st.plotly_chart(fig_perf, use_container_width=True)
     
     # 最近日志
     st.markdown("### 最近请求")
     
-    # 选择要显示的列
+    # 选择要显示的列 - 增加更多有用信息
     display_columns = [
-        'timestamp', 'request_id', 'provider', 'model', 'success', 
-        'estimated_ttft_ms', 'actual_total_tokens', 'estimated_cost_usd'
+        'timestamp', 'request_id', 'provider', 'model', 'endpoint', 'success',
+        'actual_prompt_tokens', 'actual_completion_tokens', 'actual_total_tokens',
+        'actual_cached_tokens', 'actual_cache_hit_rate',
+        'estimated_ttft_ms', 'estimated_tpot_ms', 'estimated_tokens_per_second',
+        'estimated_cost_usd'
     ]
     
     # 格式化数据显示
     log_df = df[display_columns].copy()
     log_df['timestamp'] = pd.to_datetime(log_df['timestamp']).dt.strftime('%m-%d %H:%M:%S')
-    log_df['estimated_cost_usd'] = log_df['estimated_cost_usd'].apply(format_currency)
+    
+    # 格式化各种数据类型
+    log_df['success'] = log_df['success'].apply(format_success_status)
+    log_df['actual_prompt_tokens'] = log_df['actual_prompt_tokens'].apply(format_tokens)
+    log_df['actual_completion_tokens'] = log_df['actual_completion_tokens'].apply(format_tokens)
+    log_df['actual_total_tokens'] = log_df['actual_total_tokens'].apply(format_tokens)
+    log_df['actual_cached_tokens'] = log_df['actual_cached_tokens'].apply(format_tokens)
+    log_df['actual_cache_hit_rate'] = log_df['actual_cache_hit_rate'].apply(format_cache_rate)
     log_df['estimated_ttft_ms'] = log_df['estimated_ttft_ms'].apply(format_time_ms)
+    log_df['estimated_tpot_ms'] = log_df['estimated_tpot_ms'].apply(format_time_ms)
+    log_df['estimated_tokens_per_second'] = log_df['estimated_tokens_per_second'].apply(format_tokens_per_second)
+    log_df['estimated_cost_usd'] = log_df['estimated_cost_usd'].apply(format_currency)
     
     # 显示最近20条记录
     recent_df = log_df.tail(20).reset_index(drop=True)
@@ -291,15 +431,26 @@ def main():
             pre_selected_rows=[]
         )
         
-        # 配置列显示
-        gb.configure_column("timestamp", header_name="时间", width=120)
-        gb.configure_column("request_id", header_name="请求ID", width=150)
-        gb.configure_column("provider", header_name="提供商", width=100)
-        gb.configure_column("model", header_name="模型", width=120)
-        gb.configure_column("success", header_name="成功", width=80)
-        gb.configure_column("estimated_ttft_ms", header_name="TTFT", width=100)
-        gb.configure_column("actual_total_tokens", header_name="Tokens", width=100)
-        gb.configure_column("estimated_cost_usd", header_name="成本", width=100)
+        # 配置列显示 - 优化列宽和显示名称
+        gb.configure_column("timestamp", header_name="时间", width=100)
+        gb.configure_column("request_id", header_name="请求ID", width=120)
+        gb.configure_column("provider", header_name="Provider", width=80)
+        gb.configure_column("model", header_name="模型", width=140)
+        gb.configure_column("endpoint", header_name="端点", width=80)
+        gb.configure_column("success", header_name="状态", width=60)
+        
+        # Token相关列
+        gb.configure_column("actual_prompt_tokens", header_name="输入Token", width=90)
+        gb.configure_column("actual_completion_tokens", header_name="输出Token", width=90)
+        gb.configure_column("actual_total_tokens", header_name="总Token", width=80)
+        gb.configure_column("actual_cached_tokens", header_name="缓存Token", width=90)
+        gb.configure_column("actual_cache_hit_rate", header_name="缓存率", width=80)
+        
+        # 性能指标列
+        gb.configure_column("estimated_ttft_ms", header_name="TTFT", width=80)
+        gb.configure_column("estimated_tpot_ms", header_name="TPOT", width=80)
+        gb.configure_column("estimated_tokens_per_second", header_name="吞吐量", width=80)
+        gb.configure_column("estimated_cost_usd", header_name="成本", width=80)
         
         gridOptions = gb.build()
         
@@ -367,6 +518,22 @@ def main():
         
         template_options = {
             "选择模板...": "",
+            "Token分析 - 详细统计": """
+SELECT 
+    model,
+    provider,
+    COUNT(*) as request_count,
+    SUM(actual_prompt_tokens) as total_input_tokens,
+    SUM(actual_completion_tokens) as total_output_tokens,
+    SUM(actual_total_tokens) as total_tokens,
+    SUM(actual_cached_tokens) as total_cached_tokens,
+    AVG(actual_cache_hit_rate) as avg_cache_rate,
+    SUM(estimated_cost_usd) as total_cost_usd,
+    AVG(actual_total_tokens) as avg_tokens_per_request
+FROM api_calls 
+WHERE success = true 
+GROUP BY model, provider 
+ORDER BY total_tokens DESC""",
             "性能分析 - 按模型": """
 SELECT 
     model,
@@ -374,21 +541,50 @@ SELECT
     AVG(estimated_ttft_ms) as avg_ttft_ms,
     AVG(estimated_tpot_ms) as avg_tpot_ms,
     AVG(estimated_total_latency_ms) as avg_latency_ms,
+    AVG(estimated_tokens_per_second) as avg_throughput,
     SUM(estimated_cost_usd) as total_cost_usd
 FROM api_calls 
 WHERE success = true 
 GROUP BY model 
 ORDER BY request_count DESC""",
+            "缓存效率分析": """
+SELECT 
+    model,
+    provider,
+    COUNT(*) as request_count,
+    AVG(actual_cache_hit_rate) as avg_cache_rate,
+    SUM(actual_cached_tokens) as total_cached_tokens,
+    SUM(actual_cached_tokens) * 0.0001 as estimated_cache_savings,
+    AVG(estimated_ttft_ms) as avg_ttft_ms
+FROM api_calls 
+WHERE success = true AND actual_cache_hit_rate IS NOT NULL
+GROUP BY model, provider 
+ORDER BY avg_cache_rate DESC""",
+            "成本效率排行": """
+SELECT 
+    model,
+    provider,
+    COUNT(*) as request_count,
+    SUM(estimated_cost_usd) as total_cost,
+    SUM(actual_total_tokens) as total_tokens,
+    (SUM(estimated_cost_usd) / SUM(actual_total_tokens) * 1000) as cost_per_1k_tokens,
+    AVG(estimated_cost_usd) as avg_cost_per_request
+FROM api_calls 
+WHERE success = true AND actual_total_tokens > 0
+GROUP BY model, provider 
+ORDER BY cost_per_1k_tokens ASC""",
             "最近活动": """
 SELECT 
     timestamp,
     provider,
     model,
+    endpoint,
     success,
+    actual_prompt_tokens,
+    actual_completion_tokens,
+    actual_cached_tokens,
     estimated_ttft_ms,
-    actual_total_tokens,
-    estimated_cost_usd,
-    proxy_used
+    estimated_cost_usd
 FROM api_calls 
 ORDER BY timestamp DESC 
 LIMIT 50"""
