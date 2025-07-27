@@ -48,6 +48,23 @@ class LogStorage:
                     extracted_cache_info JSON,
                     extracted_performance JSON,
                     
+                    -- HTTP 请求/响应详细信息（JSON格式）
+                    request_headers JSON,
+                    response_headers JSON,
+                    upstream_request_headers JSON,
+                    upstream_response_headers JSON,
+                    
+                    -- HTTP 元数据
+                    request_method VARCHAR,
+                    request_url TEXT,
+                    request_query_params JSON,
+                    client_ip VARCHAR,
+                    user_agent TEXT,
+                    response_status_code INTEGER,
+                    response_size_bytes INTEGER,
+                    upstream_url TEXT,
+                    upstream_status_code INTEGER,
+                    
                     -- lessllm预估分析
                     estimated_ttft_ms INTEGER,
                     estimated_tpot_ms DOUBLE,
@@ -126,7 +143,7 @@ class LogStorage:
             with duckdb.connect(self.db_path) as conn:
                 conn.execute("""
                     INSERT INTO api_calls VALUES (
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                 """, (
                     log.timestamp,
@@ -141,6 +158,22 @@ class LogStorage:
                     json.dumps(log.raw_data.extracted_usage) if log.raw_data.extracted_usage else None,
                     json.dumps(log.raw_data.extracted_cache_info) if log.raw_data.extracted_cache_info else None,
                     json.dumps(log.raw_data.extracted_performance) if log.raw_data.extracted_performance else None,
+                    # HTTP 详细信息
+                    json.dumps(log.raw_data.request_headers),
+                    json.dumps(log.raw_data.response_headers),
+                    json.dumps(log.raw_data.upstream_request_headers),
+                    json.dumps(log.raw_data.upstream_response_headers),
+                    # HTTP 元数据
+                    log.raw_data.request_method,
+                    log.raw_data.request_url,
+                    json.dumps(log.raw_data.request_query_params),
+                    log.raw_data.client_ip,
+                    log.raw_data.user_agent,
+                    log.raw_data.response_status_code,
+                    log.raw_data.response_size_bytes,
+                    log.raw_data.upstream_url,
+                    log.raw_data.upstream_status_code,
+                    # 分析数据
                     log.estimated_analysis.estimated_performance.ttft_ms,
                     log.estimated_analysis.estimated_performance.tpot_ms,
                     log.estimated_analysis.estimated_performance.total_latency_ms,

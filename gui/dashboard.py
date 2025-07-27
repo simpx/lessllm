@@ -371,7 +371,7 @@ def main():
                         st.error(f"错误: {detail['error_message']}")
                 
                 # 详细数据展示
-                tab1, tab2, tab3, tab4 = st.tabs(["📤 请求数据", "📥 响应数据", "📊 性能指标", "💰 成本分析"])
+                tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 请求数据", "📥 响应数据", "🌐 HTTP 详情", "📊 性能指标", "💰 成本分析"])
                 
                 with tab1:
                     st.markdown("**原始请求数据:**")
@@ -396,6 +396,69 @@ def main():
                         st.info("无响应数据")
                 
                 with tab3:
+                    st.markdown("**HTTP 请求详情:**")
+                    
+                    # 基本请求信息
+                    req_col1, req_col2 = st.columns(2)
+                    with req_col1:
+                        st.metric("请求方法", detail.get('request_method', 'N/A'))
+                        st.metric("客户端 IP", detail.get('client_ip', 'N/A'))
+                        st.metric("状态码", detail.get('response_status_code', 'N/A'))
+                    with req_col2:
+                        st.metric("响应大小", f"{detail.get('response_size_bytes', 0)} bytes" if detail.get('response_size_bytes') else 'N/A')
+                        st.metric("上游状态码", detail.get('upstream_status_code', 'N/A'))
+                        st.metric("上游 URL", detail.get('upstream_url', 'N/A'))
+                    
+                    # 请求头
+                    st.markdown("**请求头:**")
+                    if detail.get('request_headers'):
+                        try:
+                            request_headers = json.loads(detail['request_headers']) if isinstance(detail['request_headers'], str) else detail['request_headers']
+                            st.json(request_headers)
+                        except:
+                            st.text(str(detail['request_headers']))
+                    else:
+                        st.info("无请求头数据")
+                    
+                    # 响应头
+                    st.markdown("**响应头:**")
+                    if detail.get('response_headers'):
+                        try:
+                            response_headers = json.loads(detail['response_headers']) if isinstance(detail['response_headers'], str) else detail['response_headers']
+                            st.json(response_headers)
+                        except:
+                            st.text(str(detail['response_headers']))
+                    else:
+                        st.info("无响应头数据")
+                    
+                    # 上游请求/响应头
+                    if detail.get('upstream_request_headers') or detail.get('upstream_response_headers'):
+                        st.markdown("**上游 HTTP 详情:**")
+                        upstream_col1, upstream_col2 = st.columns(2)
+                        
+                        with upstream_col1:
+                            st.markdown("**上游请求头:**")
+                            if detail.get('upstream_request_headers'):
+                                try:
+                                    upstream_req_headers = json.loads(detail['upstream_request_headers']) if isinstance(detail['upstream_request_headers'], str) else detail['upstream_request_headers']
+                                    st.json(upstream_req_headers)
+                                except:
+                                    st.text(str(detail['upstream_request_headers']))
+                            else:
+                                st.info("无上游请求头")
+                        
+                        with upstream_col2:
+                            st.markdown("**上游响应头:**")
+                            if detail.get('upstream_response_headers'):
+                                try:
+                                    upstream_resp_headers = json.loads(detail['upstream_response_headers']) if isinstance(detail['upstream_response_headers'], str) else detail['upstream_response_headers']
+                                    st.json(upstream_resp_headers)
+                                except:
+                                    st.text(str(detail['upstream_response_headers']))
+                            else:
+                                st.info("无上游响应头")
+                
+                with tab4:
                     perf_col1, perf_col2 = st.columns(2)
                     with perf_col1:
                         st.metric("首字节时间 (TTFT)", format_time_ms(detail['estimated_ttft_ms']))
@@ -415,7 +478,7 @@ def main():
                                 st.metric("实际缓存命中率", f"{detail['actual_cache_hit_rate']:.1%}")
                                 st.metric("实际缓存Token", detail['actual_cached_tokens'])
                 
-                with tab4:
+                with tab5:
                     cost_col1, cost_col2 = st.columns(2)
                     with cost_col1:
                         st.metric("估算成本", format_currency(detail['estimated_cost_usd']))

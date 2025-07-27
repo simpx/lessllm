@@ -29,11 +29,31 @@ class CacheAnalysis(BaseModel):
 
 class RawAPIData(BaseModel):
     """原始API数据，完全忠实记录"""
-    raw_request: Dict[str, Any]  # 完整原始请求
-    raw_response: Dict[str, Any]  # 完整原始响应
+    # HTTP 请求信息
+    raw_request: Dict[str, Any]  # 完整原始请求体
+    request_headers: Dict[str, str] = {}  # 完整请求头
+    request_method: str = "POST"  # HTTP 方法
+    request_url: str = ""  # 完整请求 URL
+    request_query_params: Dict[str, Any] = {}  # 查询参数
+    client_ip: Optional[str] = None  # 客户端 IP
+    user_agent: Optional[str] = None  # User Agent
+    
+    # HTTP 响应信息
+    raw_response: Dict[str, Any]  # 完整原始响应体
+    response_headers: Dict[str, str] = {}  # 完整响应头
+    response_status_code: int = 200  # HTTP 状态码
+    response_size_bytes: Optional[int] = None  # 响应大小
+    
+    # 提取的结构化信息
     extracted_usage: Optional[Dict[str, Any]] = None  # 标准化的usage信息
     extracted_cache_info: Optional[Dict[str, Any]] = None  # API返回的缓存信息
     extracted_performance: Optional[Dict[str, Any]] = None  # API返回的性能信息
+    
+    # 网络层信息
+    upstream_request_headers: Dict[str, str] = {}  # 发送给上游的请求头
+    upstream_response_headers: Dict[str, str] = {}  # 上游返回的响应头
+    upstream_url: Optional[str] = None  # 上游 API URL
+    upstream_status_code: Optional[int] = None  # 上游状态码
 
 
 class EstimatedAnalysis(BaseModel):

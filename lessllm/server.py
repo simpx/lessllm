@@ -4,6 +4,7 @@ FastAPI server for LessLLM proxy
 
 import time
 import asyncio
+import json
 from datetime import datetime
 from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, Request
@@ -147,6 +148,13 @@ async def chat_completions(request_data: Dict[str, Any], request: Request):
     request_start_time = time.time()
     request_id = f"req_{int(time.time() * 1000)}"
     
+    # 捕获完整的 HTTP 请求信息
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent", "")
+    request_headers = dict(request.headers)
+    request_url = str(request.url)
+    query_params = dict(request.query_params)
+    
     try:
         # 获取模型对应的提供商
         model = request_data.get("model")
@@ -162,16 +170,26 @@ async def chat_completions(request_data: Dict[str, Any], request: Request):
         # 检查是否为流式请求
         is_streaming = request_data.get("stream", False)
         
+        # 构建 HTTP 上下文信息
+        http_context = {
+            "client_ip": client_ip,
+            "user_agent": user_agent,
+            "request_headers": request_headers,
+            "request_url": request_url,
+            "query_params": query_params,
+            "request_method": "POST"
+        }
+        
         if is_streaming:
             return StreamingResponse(
                 handle_streaming_request(
-                    request_data, provider, provider_name, request_id, performance_tracker
+                    request_data, provider, provider_name, request_id, performance_tracker, http_context
                 ),
                 media_type="text/plain"
             )
         else:
             return await handle_regular_request(
-                request_data, provider, provider_name, request_id, performance_tracker
+                request_data, provider, provider_name, request_id, performance_tracker, http_context
             )
     
     except HTTPException:
@@ -186,7 +204,8 @@ async def handle_regular_request(
     provider: Any, 
     provider_name: str, 
     request_id: str,
-    performance_tracker: PerformanceTracker
+    performance_tracker: PerformanceTracker,
+    http_context: Dict[str, Any]
 ) -> Dict[str, Any]:
     """处理常规（非流式）请求"""
     
@@ -205,6 +224,20 @@ async def handle_regular_request(
         
         # 解析原始数据
         raw_data = provider.parse_raw_response(request_data, response)
+        
+        # 增强原始数据，添加 HTTP 信息
+        raw_data.request_headers = http_context["request_headers"]
+        raw_data.client_ip = http_context["client_ip"]
+        raw_data.user_agent = http_context["user_agent"]
+        raw_data.request_url = http_context["request_url"]
+        raw_data.request_query_params = http_context["query_params"]
+        raw_data.request_method = http_context["request_method"]
+        
+        # 模拟响应信息（实际应该从 provider 返回）
+        raw_data.response_status_code = 200
+        raw_data.response_headers = {"content-type": "application/json"}
+        if isinstance(response, dict):
+            raw_data.response_size_bytes = len(json.dumps(response).encode('utf-8'))
         
         # 估算成本
         estimated_cost = 0.0
@@ -262,7 +295,8 @@ async def handle_streaming_request(
     provider: Any, 
     provider_name: str, 
     request_id: str,
-    performance_tracker: PerformanceTracker
+    performance_tracker: PerformanceTracker,
+    http_context: Dict[str, Any]
 ):
     """处理流式请求"""
     
@@ -292,7 +326,7 @@ async def handle_streaming_request(
     if storage:
         asyncio.create_task(record_streaming_log(
             request_data, full_response, provider, provider_name, 
-            request_id, performance_tracker, len(response_chunks)
+            request_id, performance_tracker, len(response_chunks), http_context
         ))
 
 
@@ -303,7 +337,8 @@ async def record_streaming_log(
     provider_name: str,
     request_id: str,
     performance_tracker: PerformanceTracker,
-    chunk_count: int
+    chunk_count: int,
+    http_context: Dict[str, Any]
 ):
     """记录流式请求日志"""
     
@@ -319,6 +354,18 @@ async def record_streaming_log(
         
         # 解析原始数据
         raw_data = provider.parse_raw_response(request_data, response)
+        
+        # 增强原始数据，添加 HTTP 信息
+        raw_data.request_headers = http_context["request_headers"]
+        raw_data.client_ip = http_context["client_ip"]
+        raw_data.user_agent = http_context["user_agent"]
+        raw_data.request_url = http_context["request_url"]
+        raw_data.request_query_params = http_context["query_params"]
+        raw_data.request_method = http_context["request_method"]
+        raw_data.response_status_code = 200
+        raw_data.response_headers = {"content-type": "text/plain; charset=utf-8"}
+        if isinstance(response, dict):
+            raw_data.response_size_bytes = len(json.dumps(response).encode('utf-8'))
         
         # 估算成本
         estimated_cost = 0.0
