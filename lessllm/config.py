@@ -12,6 +12,20 @@ except ImportError:
     from pydantic import BaseSettings
 from pathlib import Path
 
+# 尝试加载.env文件
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # 如果没有python-dotenv，手动读取.env文件
+    if os.path.exists('.env'):
+        with open('.env', 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key] = value
+
 
 class ProxyConfig(BaseModel):
     """代理配置"""
@@ -62,13 +76,17 @@ class Config(BaseSettings):
         """从YAML文件加载配置"""
         if not os.path.exists(yaml_path):
             raise FileNotFoundError(f"Configuration file not found: {yaml_path}")
-            
+        
+        # 先创建一个基础实例以加载.env文件
+        base_config = cls()
+        
         with open(yaml_path, 'r', encoding='utf-8') as f:
             yaml_data = yaml.safe_load(f)
             
         # 替换环境变量
         yaml_data = cls._replace_env_vars(yaml_data)
         
+        # 使用yaml数据创建新实例
         return cls(**yaml_data)
     
     @staticmethod

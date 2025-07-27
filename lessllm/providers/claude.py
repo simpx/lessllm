@@ -42,12 +42,21 @@ class ClaudeProvider(BaseProvider):
     
     def get_headers(self) -> Dict[str, str]:
         """获取Claude特定的请求头"""
-        return {
-            "x-api-key": self.api_key,
+        headers = {
             "Content-Type": "application/json",
-            "anthropic-version": "2023-06-01",
             "User-Agent": "LessLLM/0.1.0"
         }
+        
+        # 检查是否使用阿里云代理
+        if self.base_url and "aliyuncs.com" in self.base_url:
+            # 阿里云代理可能需要Bearer认证
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        else:
+            # 标准Claude API使用x-api-key
+            headers["x-api-key"] = self.api_key
+            headers["anthropic-version"] = "2023-06-01"
+        
+        return headers
     
     async def send_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """发送非流式请求"""

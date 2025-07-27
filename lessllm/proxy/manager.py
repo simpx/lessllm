@@ -46,24 +46,34 @@ class ProxyManager:
             **kwargs  # 允许用户覆盖默认配置
         }
         
-        # 添加代理配置（如果有）- 注意新版本httpx使用proxies参数
-        if proxies:
-            client_config["proxies"] = proxies
-            
         # 添加认证配置（如果有）
         if auth:
             client_config["auth"] = auth
         
         logger.debug(f"Creating httpx client with proxy config: {proxies}")
-        try:
-            return httpx.AsyncClient(**client_config)
-        except TypeError as e:
-            # 如果proxies参数不被支持，则去掉proxies参数重试
-            if "proxies" in str(e) and "proxies" in client_config:
-                logger.warning(f"Proxies not supported in httpx client init, removing proxies parameter: {e}")
-                client_config.pop("proxies", None)
-                return httpx.AsyncClient(**client_config)
-            raise
+        # 新版本httpx使用transport来处理代理
+        if proxies:
+            # 为每个协议创建代理传输
+            transports = {}
+            for protocol, proxy_url in proxies.items():
+                if proxy_url.startswith('socks'):
+                    try:
+                        import httpx_socks
+                        transports[protocol] = httpx_socks.AsyncSOCKSProxyTransport.from_url(proxy_url)
+                    except ImportError:
+                        logger.warning("httpx-socks not installed, SOCKS proxy will not work")
+                else:
+                    transports[protocol] = httpx.HTTPTransport(proxy=proxy_url)
+            
+            # 使用自定义传输
+            if transports:
+                # 使用第一个传输作为默认传输
+                default_transport = list(transports.values())[0]
+                client_config["transport"] = default_transport
+                # 对于多个协议，我们需要创建更复杂的传输配置
+                # 这里简化处理，只使用一个代理
+        
+        return httpx.AsyncClient(**client_config)
     
     def _build_proxy_config(self) -> Optional[Dict[str, str]]:
         """构建代理配置"""
@@ -88,14 +98,34 @@ class ProxyManager:
     def test_connectivity(self, test_url: str = "https://httpbin.org/get") -> Dict[str, Any]:
         """测试代理连接性"""
         try:
-            client = self.get_httpx_client()
-            
             # 使用同步客户端进行测试
-            with httpx.Client(
-                proxies=self._build_proxy_config(),
-                auth=self._build_auth_config(),
-                timeout=self.timeout
-            ) as sync_client:
+            proxies = self._build_proxy_config()
+            auth = self._build_auth_config()
+            
+            # 构建同步客户端配置
+            client_config = {
+                "timeout": self.timeout
+            }
+            
+            if auth:
+                client_config["auth"] = auth
+            
+            # 处理代理配置
+            if proxies:
+                # 为同步客户端处理代理
+                proxy_url = list(proxies.values())[0]  # 使用第一个代理
+                if proxy_url.startswith('socks'):
+                    try:
+                        import httpx_socks
+                        transport = httpx_socks.SyncSOCKSProxyTransport.from_url(proxy_url)
+                        client_config["transport"] = transport
+                    except ImportError:
+                        logger.warning("httpx-socks not installed, SOCKS proxy will not work")
+                        # 回退到直接连接
+                else:
+                    client_config["proxy"] = proxy_url
+            
+            with httpx.Client(**client_config) as sync_client:
                 response = sync_client.get(test_url)
                 
                 return {

@@ -44,7 +44,14 @@ def init_app():
     """初始化应用"""
     global storage, proxy_manager, providers, cache_estimator
     
-    config = get_config()
+    # 尝试从环境变量或默认配置加载
+    try:
+        from .config import get_config
+        config = get_config()
+    except:
+        # 如果无法获取全局配置，创建默认配置
+        from .config import Config
+        config = Config()
     
     # 初始化存储
     if config.logging.enabled:
