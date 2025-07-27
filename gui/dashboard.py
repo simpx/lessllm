@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import sys
 import os
 import json
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 
 # 添加项目根目录到Python路径
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -280,50 +281,45 @@ def main():
     if not recent_df.empty:
         st.markdown("**请求列表（点击行查看详情）：**")
         
-        # 添加CSS隐藏复选框
-        st.markdown("""
-        <style>
-        div[data-testid="stDataFrame"] .stCheckbox {
-            display: none !important;
-        }
-        div[data-testid="stDataFrame"] input[type="checkbox"] {
-            display: none !important;
-        }
-        div[data-testid="stDataFrame"] thead th:first-child,
-        div[data-testid="stDataFrame"] tbody td:first-child {
-            display: none !important;
-        }
-        .element-container:has(.stDataFrame) .stCheckbox {
-            display: none !important;
-        }
-        </style>
-        """, unsafe_allow_html=True)
+        # 配置AgGrid
+        gb = GridOptionsBuilder.from_dataframe(recent_df)
+        gb.configure_pagination(paginationAutoPageSize=True)
+        gb.configure_side_bar()
+        gb.configure_selection(
+            selection_mode="single",
+            use_checkbox=False,  # 关键：不使用复选框
+            pre_selected_rows=[]
+        )
         
-        # 使用 st.dataframe 的 on_select 功能
-        selected_rows = st.dataframe(
-            recent_df, 
-            use_container_width=True, 
+        # 配置列显示
+        gb.configure_column("timestamp", header_name="时间", width=120)
+        gb.configure_column("request_id", header_name="请求ID", width=150)
+        gb.configure_column("provider", header_name="提供商", width=100)
+        gb.configure_column("model", header_name="模型", width=120)
+        gb.configure_column("success", header_name="成功", width=80)
+        gb.configure_column("estimated_ttft_ms", header_name="TTFT", width=100)
+        gb.configure_column("actual_total_tokens", header_name="Tokens", width=100)
+        gb.configure_column("estimated_cost_usd", header_name="成本", width=100)
+        
+        gridOptions = gb.build()
+        
+        # 显示AgGrid表格
+        grid_response = AgGrid(
+            recent_df,
+            gridOptions=gridOptions,
+            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+            update_mode=GridUpdateMode.SELECTION_CHANGED,
+            fit_columns_on_grid_load=True,
+            theme="streamlit",
             height=400,
-            column_config={
-                "timestamp": "时间",
-                "request_id": "请求ID", 
-                "provider": "提供商",
-                "model": "模型",
-                "success": "成功",
-                "estimated_ttft_ms": "TTFT",
-                "actual_total_tokens": "Tokens",
-                "estimated_cost_usd": "成本"
-            },
-            on_select="rerun",
-            selection_mode="single-row",
-            hide_index=True,
-            key="clickable_table"
+            width='100%',
+            reload_data=False
         )
         
         # 检查是否选择了行
-        if selected_rows.selection.rows:
-            selected_idx = selected_rows.selection.rows[0]
-            selected_request_id = recent_df.iloc[selected_idx]['request_id']
+        selected_rows = grid_response['selected_rows']
+        if selected_rows is not None and len(selected_rows) > 0:
+            selected_request_id = selected_rows[0]['request_id']
             
             # 直接在表格下方显示详情
             st.markdown("---")
