@@ -58,6 +58,56 @@ class ClaudeProvider(BaseProvider):
         
         return headers
     
+    async def send_claude_messages_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """直接发送Claude Messages API格式的请求"""
+        client = await self.get_client()
+        url = self.get_endpoint_url("messages")
+        headers = self.get_headers()
+        
+        # 直接使用Claude格式的请求，不做转换
+        claude_request = request.copy()
+        claude_request["stream"] = False
+        
+        try:
+            response = await client.post(url, json=claude_request, headers=headers)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Claude API HTTP error: {e.response.status_code} - {e.response.text}")
+            raise Exception(f"Claude API error: {e.response.status_code}")
+        except Exception as e:
+            logger.error(f"Claude API request failed: {e}")
+            raise
+    
+    async def send_claude_messages_streaming_request(self, request: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
+        """直接发送Claude Messages API流式请求"""
+        client = await self.get_client()
+        url = self.get_endpoint_url("messages")
+        headers = self.get_headers()
+        
+        # 直接使用Claude格式的请求，设置流式
+        claude_request = request.copy()
+        claude_request["stream"] = True
+        
+        try:
+            async with client.stream("POST", url, json=claude_request, headers=headers) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]  # 移除 "data: " 前缀
+                        if data.strip() == "[DONE]":
+                            break
+                        try:
+                            yield json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Claude streaming API HTTP error: {e.response.status_code}")
+            raise Exception(f"Claude streaming API error: {e.response.status_code}")
+        except Exception as e:
+            logger.error(f"Claude streaming API request failed: {e}")
+            raise
+    
     async def send_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """发送非流式请求"""
         client = await self.get_client()

@@ -25,6 +25,11 @@ python setup.py sdist bdist_wheel  # Build distribution packages
 pip install -r requirements.txt    # Install dependencies (if requirements.txt exists)
 ```
 
+### Testing Claude Messages API
+```bash
+./test_claude_messages.sh          # Test Claude Messages API endpoint
+```
+
 ## Architecture Notes
 
 This is a minimal Python package setup using setuptools. The current codebase is in its initial state with:

@@ -24,6 +24,90 @@ from .monitoring.cache_estimator import CacheEstimator
 
 logger = logging.getLogger(__name__)
 
+
+def convert_claude_to_openai(claude_request: Dict[str, Any]) -> Dict[str, Any]:
+    """将Claude Messages API请求转换为OpenAI Chat Completions格式"""
+    openai_request = {
+        "model": claude_request.get("model", "claude-3-5-sonnet-20241022"),
+        "messages": [],
+        "max_tokens": claude_request.get("max_tokens", 1000),
+        "temperature": claude_request.get("temperature", 1.0),
+        "stream": claude_request.get("stream", False)
+    }
+    
+    # 转换messages格式
+    messages = claude_request.get("messages", [])
+    for msg in messages:
+        if isinstance(msg.get("content"), str):
+            # 简单文本消息
+            openai_request["messages"].append({
+                "role": msg["role"],
+                "content": msg["content"]
+            })
+        elif isinstance(msg.get("content"), list):
+            # 多模态消息，提取文本部分
+            text_parts = []
+            for content_block in msg["content"]:
+                if content_block.get("type") == "text":
+                    text_parts.append(content_block.get("text", ""))
+            
+            openai_request["messages"].append({
+                "role": msg["role"],
+                "content": " ".join(text_parts)
+            })
+    
+    # 处理system消息
+    if "system" in claude_request:
+        openai_request["messages"].insert(0, {
+            "role": "system",
+            "content": claude_request["system"]
+        })
+    
+    return openai_request
+
+
+def convert_openai_to_claude_response(openai_response: Dict[str, Any], is_streaming: bool = False) -> Dict[str, Any]:
+    """将OpenAI响应转换为Claude Messages API格式"""
+    if is_streaming:
+        # 流式响应转换
+        if "choices" in openai_response and openai_response["choices"]:
+            choice = openai_response["choices"][0]
+            if "delta" in choice and "content" in choice["delta"]:
+                return {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {
+                        "type": "text_delta",
+                        "text": choice["delta"]["content"]
+                    }
+                }
+        return {"type": "ping"}
+    else:
+        # 非流式响应转换
+        claude_response = {
+            "id": openai_response.get("id", "msg_unknown"),
+            "type": "message",
+            "role": "assistant",
+            "model": openai_response.get("model", "claude-3-5-sonnet-20241022"),
+            "content": [],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {
+                "input_tokens": openai_response.get("usage", {}).get("prompt_tokens", 0),
+                "output_tokens": openai_response.get("usage", {}).get("completion_tokens", 0)
+            }
+        }
+        
+        # 提取消息内容
+        if "choices" in openai_response and openai_response["choices"]:
+            content = openai_response["choices"][0].get("message", {}).get("content", "")
+            claude_response["content"] = [{
+                "type": "text",
+                "text": content
+            }]
+        
+        return claude_response
+
 # 全局变量
 app = FastAPI(title="LessLLM", description="Lightweight LLM API Proxy", version="0.1.0")
 storage: Optional[LogStorage] = None
@@ -142,9 +226,87 @@ def get_provider_for_model(model: str) -> tuple[str, Any]:
     raise HTTPException(status_code=400, detail=f"No provider available for model: {model}")
 
 
+@app.post("/v1/messages")
+async def messages(request: Request):
+    """Claude Messages API端点 - 直接转发到Claude提供商"""
+    # 从request body获取数据
+    request_data = await request.json()
+    request_start_time = time.time()
+    request_id = f"req_{int(time.time() * 1000)}"
+    
+    # 捕获完整的 HTTP 请求信息
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent", "")
+    request_headers = dict(request.headers)
+    request_url = str(request.url)
+    query_params = dict(request.query_params)
+    
+    # 记录Claude CLI的beta参数（通常Claude CLI会使用这个参数）
+    if query_params:
+        logger.info(f"Claude Messages API called with query params: {query_params}")
+    
+    try:
+        # 获取模型对应的提供商（Claude）
+        model = request_data.get("model", "claude-3-5-sonnet-20241022")
+        
+        # 强制使用Claude提供商，因为这是Claude Messages API
+        claude_provider = None
+        claude_provider_name = None
+        for name, provider in providers.items():
+            if isinstance(provider, ClaudeProvider):
+                claude_provider = provider
+                claude_provider_name = name
+                break
+        
+        if not claude_provider:
+            raise HTTPException(status_code=400, detail="No Claude provider configured for Messages API")
+        
+        provider_name, provider = claude_provider_name, claude_provider
+        
+        # 初始化性能跟踪器
+        performance_tracker = PerformanceTracker()
+        performance_tracker.start_request()
+        
+        # 构建 HTTP 上下文信息
+        http_context = {
+            "client_ip": client_ip,
+            "user_agent": user_agent,
+            "request_headers": request_headers,
+            "request_url": request_url,
+            "query_params": query_params,
+            "request_method": "POST"
+        }
+        
+        # 检查是否为流式请求
+        is_streaming = request_data.get("stream", False)
+        
+        if is_streaming:
+            return StreamingResponse(
+                handle_claude_messages_streaming(
+                    request_data, provider, provider_name, request_id, performance_tracker, http_context
+                ),
+                media_type="text/event-stream"
+            )
+        else:
+            return await handle_claude_messages_regular(
+                request_data, provider, provider_name, request_id, performance_tracker, http_context
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Claude Messages request {request_id} failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request_data: Dict[str, Any], request: Request):
-    """聊天完成API端点"""
+    """OpenAI聊天完成API端点"""
+    return await chat_completions_internal(request_data, request)
+
+
+async def chat_completions_internal(request_data: Dict[str, Any], request: Request):
+    """内部聊天完成处理函数"""
     request_start_time = time.time()
     request_id = f"req_{int(time.time() * 1000)}"
     
@@ -403,6 +565,222 @@ async def store_log_async(log: APICallLog):
         storage.store_log(log)
     except Exception as e:
         logger.error(f"Failed to store log: {e}")
+
+
+async def handle_claude_messages_regular(
+    request_data: Dict[str, Any], 
+    provider: Any, 
+    provider_name: str, 
+    request_id: str,
+    performance_tracker: PerformanceTracker,
+    http_context: Dict[str, Any]
+) -> Dict[str, Any]:
+    """处理Claude Messages API的常规请求"""
+    
+    try:
+        # 直接发送Claude格式请求
+        response = await provider.send_claude_messages_request(request_data)
+        
+        # 记录性能指标
+        performance_metrics = performance_tracker.calculate_non_streaming_metrics()
+        
+        # 估算缓存
+        cache_analysis = CacheAnalysis()
+        if cache_estimator:
+            messages = request_data.get("messages", [])
+            cache_analysis = cache_estimator.estimate_cache_tokens(messages)
+        
+        # 解析原始数据
+        raw_data = RawAPIData(
+            raw_request=request_data,
+            raw_response=response,
+            request_headers=http_context["request_headers"],
+            client_ip=http_context["client_ip"],
+            user_agent=http_context["user_agent"],
+            request_url=http_context["request_url"],
+            request_query_params=http_context["query_params"],
+            request_method=http_context["request_method"],
+            response_status_code=200,
+            response_headers={"content-type": "application/json"},
+            response_size_bytes=len(json.dumps(response).encode('utf-8'))
+        )
+        
+        # 从Claude响应中提取usage信息
+        if "usage" in response:
+            raw_data.extracted_usage = response["usage"]
+        
+        # 估算成本
+        estimated_cost = 0.0
+        if raw_data.extracted_usage:
+            estimated_cost = provider.estimate_cost(raw_data.extracted_usage, request_data.get("model", "claude-3-5-sonnet-20241022"))
+        
+        # 创建分析数据
+        estimated_analysis = EstimatedAnalysis(
+            estimated_performance=performance_metrics,
+            estimated_cache=cache_analysis,
+            estimated_cost_usd=estimated_cost
+        )
+        
+        # 记录日志
+        if storage:
+            log = APICallLog(
+                request_id=request_id,
+                provider=provider_name,
+                model=request_data.get("model", "claude-3-5-sonnet-20241022"),
+                endpoint="messages",
+                raw_data=raw_data,
+                estimated_analysis=estimated_analysis,
+                success=True,
+                proxy_used=proxy_manager.get_proxy_info()["active_proxy"] if proxy_manager else None
+            )
+            
+            # 异步存储日志
+            asyncio.create_task(store_log_async(log))
+        
+        return response
+        
+    except Exception as e:
+        # 记录失败日志
+        if storage:
+            error_log = APICallLog(
+                request_id=request_id,
+                provider=provider_name,
+                model=request_data.get("model", "claude-3-5-sonnet-20241022"),
+                endpoint="messages",
+                raw_data=RawAPIData(raw_request=request_data, raw_response={}),
+                estimated_analysis=EstimatedAnalysis(
+                    estimated_performance=PerformanceAnalysis(total_latency_ms=0),
+                    estimated_cache=CacheAnalysis()
+                ),
+                success=False,
+                error_message=str(e)
+            )
+            asyncio.create_task(store_log_async(error_log))
+        
+        raise
+
+
+async def handle_claude_messages_streaming(
+    request_data: Dict[str, Any], 
+    provider: Any, 
+    provider_name: str, 
+    request_id: str,
+    performance_tracker: PerformanceTracker,
+    http_context: Dict[str, Any]
+):
+    """处理Claude Messages API的流式请求"""
+    
+    response_chunks = []
+    full_response_content = ""
+    
+    try:
+        async for chunk in provider.send_claude_messages_streaming_request(request_data):
+            # 记录token时间戳
+            performance_tracker.record_token()
+            
+            # 收集响应数据
+            response_chunks.append(chunk)
+            
+            # 提取文本内容用于日志记录
+            if chunk.get("type") == "content_block_delta":
+                delta = chunk.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    full_response_content += delta.get("text", "")
+            
+            # 直接转发Claude格式的流式响应
+            yield f"data: {json.dumps(chunk)}\n\n"
+        
+        yield "data: [DONE]\n\n"
+        
+    except Exception as e:
+        logger.error(f"Claude Messages streaming request {request_id} failed: {e}")
+        error_chunk = {
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": str(e)
+            }
+        }
+        yield f'data: {json.dumps(error_chunk)}\n\n'
+    
+    # 异步记录日志
+    if storage:
+        asyncio.create_task(record_claude_streaming_log(
+            request_data, full_response_content, provider, provider_name, 
+            request_id, performance_tracker, len(response_chunks), http_context
+        ))
+
+
+async def record_claude_streaming_log(
+    request_data: Dict[str, Any],
+    response_content: str,
+    provider: Any,
+    provider_name: str,
+    request_id: str,
+    performance_tracker: PerformanceTracker,
+    chunk_count: int,
+    http_context: Dict[str, Any]
+):
+    """记录Claude Messages流式请求日志"""
+    
+    try:
+        # 计算性能指标
+        performance_metrics = performance_tracker.calculate_metrics(chunk_count)
+        
+        # 估算缓存
+        cache_analysis = CacheAnalysis()
+        if cache_estimator:
+            messages = request_data.get("messages", [])
+            cache_analysis = cache_estimator.estimate_cache_tokens(messages)
+        
+        # 构建响应数据
+        response = {
+            "type": "message",
+            "content": [{"type": "text", "text": response_content}],
+            "model": request_data.get("model", "claude-3-5-sonnet-20241022")
+        }
+        
+        # 解析原始数据
+        raw_data = RawAPIData(
+            raw_request=request_data,
+            raw_response=response,
+            request_headers=http_context["request_headers"],
+            client_ip=http_context["client_ip"],
+            user_agent=http_context["user_agent"],
+            request_url=http_context["request_url"],
+            request_query_params=http_context["query_params"],
+            request_method=http_context["request_method"],
+            response_status_code=200,
+            response_headers={"content-type": "text/plain; charset=utf-8"},
+            response_size_bytes=len(response_content.encode('utf-8'))
+        )
+        
+        # 估算成本
+        estimated_cost = 0.0
+        
+        # 创建分析数据
+        estimated_analysis = EstimatedAnalysis(
+            estimated_performance=performance_metrics,
+            estimated_cache=cache_analysis,
+            estimated_cost_usd=estimated_cost
+        )
+        
+        # 创建日志
+        log = APICallLog(
+            request_id=request_id,
+            provider=provider_name,
+            model=request_data.get("model", "claude-3-5-sonnet-20241022"),
+            endpoint="messages",
+            raw_data=raw_data,
+            estimated_analysis=estimated_analysis,
+            success=True,
+            proxy_used=proxy_manager.get_proxy_info()["active_proxy"] if proxy_manager else None
+        )
+        
+        storage.store_log(log)
+        
+    except Exception as e:
+        logger.error(f"Failed to record Claude streaming log: {e}")
 
 
 @app.get("/v1/models")
