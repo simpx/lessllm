@@ -318,8 +318,8 @@ def main():
     # 显示最近20条记录
     recent_df = log_df.tail(20).reset_index(drop=True)
     
-    # 使用可选择的数据表格
-    event = st.dataframe(
+    # 显示数据表格
+    st.dataframe(
         recent_df, 
         use_container_width=True, 
         height=300,
@@ -332,17 +332,22 @@ def main():
             "estimated_ttft_ms": "TTFT",
             "actual_total_tokens": "Tokens",
             "estimated_cost_usd": "成本"
-        },
-        on_select="rerun",
-        selection_mode="single-row"
+        }
     )
     
-    # 显示详细信息
-    if hasattr(event, 'selection') and event.selection and len(event.selection.rows) > 0:
-        selected_idx = event.selection.rows[0]
-        if selected_idx < len(recent_df):
-            selected_request_id = recent_df.iloc[selected_idx]['request_id']
-            
+    # 添加请求ID选择器来查看详情
+    st.markdown("### 🔍 查看请求详情")
+    
+    if not recent_df.empty:
+        request_ids = recent_df['request_id'].tolist()
+        selected_request_id = st.selectbox(
+            "选择请求ID查看详情",
+            options=request_ids,
+            index=0,
+            key="request_detail_selector"
+        )
+        
+        if selected_request_id:
             # 查询完整的请求详情
             detail_sql = "SELECT * FROM api_calls WHERE request_id = ?"
             detail_result = storage.query(detail_sql, [selected_request_id])
@@ -418,6 +423,8 @@ def main():
                     with cost_col2:
                         st.metric("输出Token", detail['actual_completion_tokens'] or "N/A")
                         st.metric("总Token", detail['actual_total_tokens'] or "N/A")
+    else:
+        st.info("暂无日志数据")
     
     # SQL 查询功能
     st.markdown("### SQL 查询")
