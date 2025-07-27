@@ -280,6 +280,21 @@ def main():
     if not recent_df.empty:
         st.markdown("**点击表格行查看详情：**")
         
+        # 添加CSS隐藏选择列
+        st.markdown("""
+        <style>
+        .stDataFrame [data-testid="column-0"] {
+            display: none;
+        }
+        .stDataFrame [data-testid="stCheckbox"] {
+            display: none;
+        }
+        .stDataFrame th:first-child, .stDataFrame td:first-child {
+            display: none;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
         # 使用可选择行的数据框
         event = st.dataframe(
             recent_df, 
@@ -296,7 +311,8 @@ def main():
                 "estimated_cost_usd": "成本"
             },
             on_select="rerun",
-            selection_mode="single-row"
+            selection_mode="single-row",
+            hide_index=True
         )
         
         # 检查是否有选择的行
