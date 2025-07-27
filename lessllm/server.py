@@ -226,9 +226,8 @@ def get_provider_for_model(model: str) -> tuple[str, Any]:
     raise HTTPException(status_code=400, detail=f"No provider available for model: {model}")
 
 
-@app.post("/v1/messages")
-async def messages(request: Request):
-    """Claude Messages API端点 - 直接转发到Claude提供商"""
+async def handle_claude_messages_api(request: Request):
+    """处理Claude Messages API请求 - 智能路由"""
     # 从request body获取数据
     request_data = await request.json()
     request_start_time = time.time()
@@ -241,55 +240,29 @@ async def messages(request: Request):
     request_url = str(request.url)
     query_params = dict(request.query_params)
     
-    # 记录Claude CLI的beta参数（通常Claude CLI会使用这个参数）
+    # 记录Claude CLI的beta参数
     if query_params:
         logger.info(f"Claude Messages API called with query params: {query_params}")
     
     try:
-        # 获取模型对应的提供商（Claude）
+        # 获取模型对应的提供商
         model = request_data.get("model", "claude-3-5-sonnet-20241022")
+        provider_name, provider = get_provider_for_model(model)
         
-        # 强制使用Claude提供商，因为这是Claude Messages API
-        claude_provider = None
-        claude_provider_name = None
-        for name, provider in providers.items():
-            if isinstance(provider, ClaudeProvider):
-                claude_provider = provider
-                claude_provider_name = name
-                break
-        
-        if not claude_provider:
-            raise HTTPException(status_code=400, detail="No Claude provider configured for Messages API")
-        
-        provider_name, provider = claude_provider_name, claude_provider
-        
-        # 初始化性能跟踪器
-        performance_tracker = PerformanceTracker()
-        performance_tracker.start_request()
-        
-        # 构建 HTTP 上下文信息
-        http_context = {
-            "client_ip": client_ip,
-            "user_agent": user_agent,
-            "request_headers": request_headers,
-            "request_url": request_url,
-            "query_params": query_params,
-            "request_method": "POST"
-        }
-        
-        # 检查是否为流式请求
-        is_streaming = request_data.get("stream", False)
-        
-        if is_streaming:
-            return StreamingResponse(
-                handle_claude_messages_streaming(
-                    request_data, provider, provider_name, request_id, performance_tracker, http_context
-                ),
-                media_type="text/event-stream"
+        # 检查提供商类型，决定处理方式
+        if isinstance(provider, ClaudeProvider):
+            # Claude提供商：直接透传Claude Messages API
+            logger.info(f"Direct passthrough: Claude Messages API → Claude Provider ({provider_name})")
+            return await handle_claude_direct_passthrough(
+                request_data, provider, provider_name, request_id, request_headers, 
+                client_ip, user_agent, request_url, query_params
             )
         else:
-            return await handle_claude_messages_regular(
-                request_data, provider, provider_name, request_id, performance_tracker, http_context
+            # 非Claude提供商：需要转换
+            logger.info(f"Format conversion: Claude Messages API → OpenAI Provider ({provider_name})")
+            return await handle_claude_to_openai_conversion(
+                request_data, provider, provider_name, request_id, request_headers,
+                client_ip, user_agent, request_url, query_params
             )
     
     except HTTPException:
@@ -299,10 +272,345 @@ async def messages(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/v1/chat/completions")
-async def chat_completions(request_data: Dict[str, Any], request: Request):
-    """OpenAI聊天完成API端点"""
-    return await chat_completions_internal(request_data, request)
+async def handle_openai_chat_completions_api(request: Request):
+    """处理OpenAI Chat Completions API请求 - 智能路由"""
+    # 从request body获取数据
+    request_data = await request.json()
+    request_start_time = time.time()
+    request_id = f"req_{int(time.time() * 1000)}"
+    
+    # 捕获完整的 HTTP 请求信息
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent", "")
+    request_headers = dict(request.headers)
+    request_url = str(request.url)
+    query_params = dict(request.query_params)
+    
+    try:
+        # 获取模型对应的提供商
+        model = request_data.get("model")
+        if not model:
+            raise HTTPException(status_code=400, detail="Model is required")
+        
+        provider_name, provider = get_provider_for_model(model)
+        
+        # 检查提供商类型，决定处理方式
+        if isinstance(provider, OpenAIProvider):
+            # OpenAI提供商：直接透传
+            logger.info(f"Direct passthrough: OpenAI Chat Completions API → OpenAI Provider ({provider_name})")
+            return await handle_openai_direct_passthrough(
+                request_data, provider, provider_name, request_id, request_headers,
+                client_ip, user_agent, request_url, query_params
+            )
+        elif isinstance(provider, ClaudeProvider):
+            # Claude提供商：需要转换
+            logger.info(f"Format conversion: OpenAI Chat Completions API → Claude Provider ({provider_name})")
+            return await handle_openai_to_claude_conversion(
+                request_data, provider, provider_name, request_id, request_headers,
+                client_ip, user_agent, request_url, query_params
+            )
+        else:
+            # 其他提供商：默认使用OpenAI格式
+            logger.info(f"Default OpenAI format: OpenAI Chat Completions API → Provider ({provider_name})")
+            return await handle_openai_direct_passthrough(
+                request_data, provider, provider_name, request_id, request_headers,
+                client_ip, user_agent, request_url, query_params
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"OpenAI Chat Completions request {request_id} failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# 智能路由处理函数
+# ============================================================================
+
+async def handle_claude_direct_passthrough(
+    request_data: Dict[str, Any], provider: Any, provider_name: str, request_id: str,
+    request_headers: Dict[str, str], client_ip: str, user_agent: str, 
+    request_url: str, query_params: Dict[str, Any]
+):
+    """Claude Messages API直接透传到Claude提供商"""
+    # 初始化性能跟踪器
+    performance_tracker = PerformanceTracker()
+    performance_tracker.start_request()
+    
+    # 构建 HTTP 上下文信息
+    http_context = {
+        "client_ip": client_ip,
+        "user_agent": user_agent,
+        "request_headers": request_headers,
+        "request_url": request_url,
+        "query_params": query_params,
+        "request_method": "POST"
+    }
+    
+    # 检查是否为流式请求
+    is_streaming = request_data.get("stream", False)
+    
+    if is_streaming:
+        return StreamingResponse(
+            handle_claude_messages_streaming(
+                request_data, provider, provider_name, request_id, performance_tracker, http_context
+            ),
+            media_type="text/event-stream"
+        )
+    else:
+        return await handle_claude_messages_regular(
+            request_data, provider, provider_name, request_id, performance_tracker, http_context
+        )
+
+
+async def handle_claude_to_openai_conversion(
+    request_data: Dict[str, Any], provider: Any, provider_name: str, request_id: str,
+    request_headers: Dict[str, str], client_ip: str, user_agent: str,
+    request_url: str, query_params: Dict[str, Any]
+):
+    """将Claude Messages API转换为OpenAI格式并发送到OpenAI提供商"""
+    # 转换Claude Messages API格式到OpenAI Chat Completions格式
+    openai_request = convert_claude_to_openai(request_data)
+    
+    # 初始化性能跟踪器
+    performance_tracker = PerformanceTracker()
+    performance_tracker.start_request()
+    
+    # 构建 HTTP 上下文信息
+    http_context = {
+        "client_ip": client_ip,
+        "user_agent": user_agent,
+        "request_headers": request_headers,
+        "request_url": request_url,
+        "query_params": query_params,
+        "request_method": "POST"
+    }
+    
+    # 检查是否为流式请求
+    is_streaming = openai_request.get("stream", False)
+    
+    if is_streaming:
+        # 流式响应需要转换回Claude格式
+        return StreamingResponse(
+            handle_openai_to_claude_streaming_conversion(
+                openai_request, provider, provider_name, request_id, performance_tracker, http_context
+            ),
+            media_type="text/event-stream"
+        )
+    else:
+        # 非流式响应
+        response = await handle_regular_request(
+            openai_request, provider, provider_name, request_id, performance_tracker, http_context
+        )
+        # 转换响应格式回Claude Messages API格式
+        return convert_openai_to_claude_response(response)
+
+
+async def handle_openai_direct_passthrough(
+    request_data: Dict[str, Any], provider: Any, provider_name: str, request_id: str,
+    request_headers: Dict[str, str], client_ip: str, user_agent: str,
+    request_url: str, query_params: Dict[str, Any]
+):
+    """OpenAI Chat Completions API直接透传到OpenAI提供商"""
+    # 初始化性能跟踪器
+    performance_tracker = PerformanceTracker()
+    performance_tracker.start_request()
+    
+    # 构建 HTTP 上下文信息
+    http_context = {
+        "client_ip": client_ip,
+        "user_agent": user_agent,
+        "request_headers": request_headers,
+        "request_url": request_url,
+        "query_params": query_params,
+        "request_method": "POST"
+    }
+    
+    # 检查是否为流式请求
+    is_streaming = request_data.get("stream", False)
+    
+    if is_streaming:
+        return StreamingResponse(
+            handle_streaming_request(
+                request_data, provider, provider_name, request_id, performance_tracker, http_context
+            ),
+            media_type="text/plain"
+        )
+    else:
+        return await handle_regular_request(
+            request_data, provider, provider_name, request_id, performance_tracker, http_context
+        )
+
+
+async def handle_openai_to_claude_conversion(
+    request_data: Dict[str, Any], provider: Any, provider_name: str, request_id: str,
+    request_headers: Dict[str, str], client_ip: str, user_agent: str,
+    request_url: str, query_params: Dict[str, Any]
+):
+    """将OpenAI Chat Completions API转换为Claude格式并发送到Claude提供商"""
+    # 使用provider的内置转换方法
+    claude_request = provider._convert_to_claude_format(request_data)
+    
+    # 初始化性能跟踪器
+    performance_tracker = PerformanceTracker()
+    performance_tracker.start_request()
+    
+    # 构建 HTTP 上下文信息
+    http_context = {
+        "client_ip": client_ip,
+        "user_agent": user_agent,
+        "request_headers": request_headers,
+        "request_url": request_url,
+        "query_params": query_params,
+        "request_method": "POST"
+    }
+    
+    # 检查是否为流式请求
+    is_streaming = claude_request.get("stream", False)
+    
+    if is_streaming:
+        # 流式响应需要转换回OpenAI格式
+        return StreamingResponse(
+            handle_claude_to_openai_streaming_conversion(
+                claude_request, provider, provider_name, request_id, performance_tracker, http_context
+            ),
+            media_type="text/plain"
+        )
+    else:
+        # 非流式响应
+        response = await provider.send_request(claude_request)
+        # 转换响应格式回OpenAI Chat Completions格式
+        return provider.normalize_response(response)
+
+
+async def handle_openai_to_claude_streaming_conversion(
+    claude_request: Dict[str, Any], provider: Any, provider_name: str, request_id: str,
+    performance_tracker: PerformanceTracker, http_context: Dict[str, Any]
+):
+    """处理OpenAI到Claude的流式转换"""
+    response_chunks = []
+    full_response = {"choices": [{"message": {"content": ""}}]}
+    
+    try:
+        async for chunk in provider.send_streaming_request(claude_request):
+            # 记录token时间戳
+            performance_tracker.record_token()
+            
+            # 将Claude流式响应转换为OpenAI格式
+            openai_chunk = convert_claude_streaming_to_openai(chunk)
+            if openai_chunk:
+                response_chunks.append(openai_chunk)
+                if openai_chunk.get("choices") and openai_chunk["choices"][0].get("delta", {}).get("content"):
+                    full_response["choices"][0]["message"]["content"] += openai_chunk["choices"][0]["delta"]["content"]
+                
+                # 返回OpenAI格式的流式数据
+                yield f"data: {json.dumps(openai_chunk)}\\n\\n"
+        
+        yield "data: [DONE]\\n\\n"
+        
+    except Exception as e:
+        logger.error(f"OpenAI to Claude streaming conversion failed: {e}")
+        yield f'data: {{"error": "{str(e)}"}}\\n\\n'
+    
+    # 异步记录日志
+    if storage:
+        asyncio.create_task(record_streaming_log(
+            claude_request, full_response, provider, provider_name,
+            request_id, performance_tracker, len(response_chunks), http_context
+        ))
+
+
+async def handle_claude_to_openai_streaming_conversion(
+    openai_request: Dict[str, Any], provider: Any, provider_name: str, request_id: str,
+    performance_tracker: PerformanceTracker, http_context: Dict[str, Any]
+):
+    """处理Claude到OpenAI的流式转换"""
+    response_chunks = []
+    full_response_content = ""
+    
+    try:
+        async for chunk in provider.send_streaming_request(openai_request):
+            # 记录token时间戳
+            performance_tracker.record_token()
+            
+            # 将OpenAI流式响应转换为Claude格式
+            claude_chunk = convert_openai_streaming_to_claude(chunk)
+            if claude_chunk:
+                response_chunks.append(claude_chunk)
+                
+                # 提取文本内容用于日志记录
+                if claude_chunk.get("type") == "content_block_delta":
+                    delta = claude_chunk.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        full_response_content += delta.get("text", "")
+                
+                # 返回Claude格式的流式数据
+                yield f"data: {json.dumps(claude_chunk)}\\n\\n"
+        
+        yield "data: [DONE]\\n\\n"
+        
+    except Exception as e:
+        logger.error(f"Claude to OpenAI streaming conversion failed: {e}")
+        error_chunk = {
+            "type": "error",
+            "error": {
+                "type": "api_error", 
+                "message": str(e)
+            }
+        }
+        yield f'data: {json.dumps(error_chunk)}\\n\\n'
+    
+    # 异步记录日志
+    if storage:
+        asyncio.create_task(record_claude_streaming_log(
+            openai_request, full_response_content, provider, provider_name,
+            request_id, performance_tracker, len(response_chunks), http_context
+        ))
+
+
+def convert_claude_streaming_to_openai(claude_chunk: Dict[str, Any]) -> Dict[str, Any]:
+    """将Claude流式响应转换为OpenAI格式"""
+    if claude_chunk.get("type") == "content_block_delta":
+        delta = claude_chunk.get("delta", {})
+        if delta.get("type") == "text_delta":
+            return {
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "content": delta.get("text", "")
+                    }
+                }]
+            }
+    return None
+
+
+def convert_openai_streaming_to_claude(openai_chunk: Dict[str, Any]) -> Dict[str, Any]:
+    """将OpenAI流式响应转换为Claude格式"""
+    if "choices" in openai_chunk and openai_chunk["choices"]:
+        choice = openai_chunk["choices"][0]
+        if "delta" in choice and "content" in choice["delta"]:
+            return {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "text_delta",
+                    "text": choice["delta"]["content"]
+                }
+            }
+    return {"type": "ping"}
+
+
+@app.post("/v1/messages")
+async def messages(request: Request):
+    """Claude Messages API端点 - 智能路由到合适的提供商"""
+    return await handle_claude_messages_api(request)
+
+
+@app.post("/v1/chat/completions") 
+async def chat_completions(request: Request):
+    """OpenAI Chat Completions API端点 - 智能路由到合适的提供商"""
+    return await handle_openai_chat_completions_api(request)
 
 
 async def chat_completions_internal(request_data: Dict[str, Any], request: Request):
