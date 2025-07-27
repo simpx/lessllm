@@ -97,10 +97,20 @@ class APICallLog(BaseModel):
         """从原始数据中提取关键字段以便查询"""
         if self.raw_data.extracted_usage:
             usage = self.raw_data.extracted_usage
-            self.actual_prompt_tokens = usage.get('prompt_tokens')
-            self.actual_completion_tokens = usage.get('completion_tokens')
-            self.actual_total_tokens = usage.get('total_tokens')
             
+            # 支持OpenAI格式 (prompt_tokens, completion_tokens, total_tokens)
+            if 'prompt_tokens' in usage:
+                self.actual_prompt_tokens = usage.get('prompt_tokens')
+                self.actual_completion_tokens = usage.get('completion_tokens')
+                self.actual_total_tokens = usage.get('total_tokens')
+            # 支持Claude格式 (input_tokens, output_tokens)
+            elif 'input_tokens' in usage:
+                self.actual_prompt_tokens = usage.get('input_tokens')
+                self.actual_completion_tokens = usage.get('output_tokens')
+                # 计算total_tokens
+                if self.actual_prompt_tokens and self.actual_completion_tokens:
+                    self.actual_total_tokens = self.actual_prompt_tokens + self.actual_completion_tokens
+                    
         if self.raw_data.extracted_cache_info:
             cache_info = self.raw_data.extracted_cache_info
             self.actual_cached_tokens = cache_info.get('cached_tokens')
