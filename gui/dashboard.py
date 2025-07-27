@@ -73,16 +73,20 @@ def show_request_details(storage, request_id):
         detail = detail_result[0]
         
         # 基本信息
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("提供商", detail['provider'])
+            st.metric("请求ID", detail['request_id'])
         with col2:
-            st.metric("模型", detail['model'])
-            st.metric("状态", "✅ 成功" if detail['success'] else "❌ 失败")
+            st.metric("提供商", detail['provider'])
         with col3:
-            st.metric("代理", detail['proxy_used'] or "直连")
-            if detail['error_message']:
-                st.error(f"错误: {detail['error_message']}")
+            st.metric("模型", detail['model'])
+        with col4:
+            st.metric("状态", "✅ 成功" if detail['success'] else "❌ 失败")
+        
+        if detail['proxy_used']:
+            st.info(f"**代理:** {detail['proxy_used']}")
+        if detail['error_message']:
+            st.error(f"**错误:** {detail['error_message']}")
         
         # 详细数据展示
         tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 请求数据", "📥 响应数据", "🌐 HTTP 详情", "📊 性能指标", "💰 成本分析"])
@@ -274,19 +278,36 @@ def main():
     recent_df = log_df.tail(20).reset_index(drop=True)
     
     if not recent_df.empty:
-        st.markdown("**点击请求可展开查看详情：**")
+        st.markdown("**点击表格行查看详情：**")
         
-        # 为每个请求创建一个可展开的区域
-        for idx, row in recent_df.iterrows():
-            success_icon = "✅" if row['success'] else "❌"
-            header_text = f"{success_icon} {row['timestamp']} | {row['model']} | {row['provider']} | TTFT: {row['estimated_ttft_ms']} | Tokens: {row['actual_total_tokens']} | Cost: {row['estimated_cost_usd']}"
+        # 使用可选择行的数据框
+        event = st.dataframe(
+            recent_df, 
+            use_container_width=True, 
+            height=400,
+            column_config={
+                "timestamp": "时间",
+                "request_id": "请求ID", 
+                "provider": "提供商",
+                "model": "模型",
+                "success": "成功",
+                "estimated_ttft_ms": "TTFT",
+                "actual_total_tokens": "Tokens",
+                "estimated_cost_usd": "成本"
+            },
+            on_select="rerun",
+            selection_mode="single-row"
+        )
+        
+        # 检查是否有选择的行
+        if event.selection and event.selection.rows:
+            selected_row_idx = event.selection.rows[0]
+            selected_request_id = recent_df.iloc[selected_row_idx]['request_id']
             
-            with st.expander(header_text, expanded=False):
-                # 显示基本信息
-                st.markdown(f"**请求ID:** `{row['request_id']}`")
-                
-                # 在expander内显示详细信息
-                show_request_details(storage, row['request_id'])
+            # 显示选中请求的详情
+            st.markdown("---")
+            st.markdown(f"### 🔍 请求详情 - {selected_request_id}")
+            show_request_details(storage, selected_request_id)
     else:
         st.info("暂无日志数据")
     
