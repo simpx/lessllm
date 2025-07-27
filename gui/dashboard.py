@@ -65,9 +65,6 @@ def format_time_ms(value):
 
 def show_request_details(storage, request_id):
     """显示请求详情"""
-    st.markdown("### 🔍 请求详情")
-    st.info(f"当前查看：{request_id} (点击表格其他行可切换)")
-    
     # 查询完整的请求详情
     detail_sql = "SELECT * FROM api_calls WHERE request_id = ?"
     detail_result = storage.query(detail_sql, [request_id])
@@ -78,7 +75,6 @@ def show_request_details(storage, request_id):
         # 基本信息
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("请求ID", detail['request_id'])
             st.metric("提供商", detail['provider'])
         with col2:
             st.metric("模型", detail['model'])
@@ -274,47 +270,23 @@ def main():
     log_df['estimated_cost_usd'] = log_df['estimated_cost_usd'].apply(format_currency)
     log_df['estimated_ttft_ms'] = log_df['estimated_ttft_ms'].apply(format_time_ms)
     
-    # 显示最近20条记录，启用行选择
+    # 显示最近20条记录
     recent_df = log_df.tail(20).reset_index(drop=True)
     
     if not recent_df.empty:
-        # 使用简单的selectbox来选择请求
-        st.markdown("**点击下方选择要查看详情的请求：**")
+        st.markdown("**点击请求可展开查看详情：**")
         
-        # 创建选项列表，显示时间戳和请求ID
-        options = []
+        # 为每个请求创建一个可展开的区域
         for idx, row in recent_df.iterrows():
-            display_text = f"{row['timestamp']} - {row['request_id']} ({row['model']})"
-            options.append((row['request_id'], display_text))
-        
-        selected_request_id = st.selectbox(
-            "选择请求",
-            options,
-            format_func=lambda x: x[1],
-            index=0,
-            key="request_selector"
-        )[0]
-        
-        # 显示数据表格（仅用于展示）
-        st.dataframe(
-            recent_df, 
-            use_container_width=True, 
-            height=300,
-            column_config={
-                "timestamp": "时间",
-                "request_id": "请求ID", 
-                "provider": "提供商",
-                "model": "模型",
-                "success": "成功",
-                "estimated_ttft_ms": "TTFT",
-                "actual_total_tokens": "Tokens",
-                "estimated_cost_usd": "成本"
-            }
-        )
-        
-        # 显示选中请求的详情
-        if selected_request_id:
-            show_request_details(storage, selected_request_id)
+            success_icon = "✅" if row['success'] else "❌"
+            header_text = f"{success_icon} {row['timestamp']} | {row['model']} | {row['provider']} | TTFT: {row['estimated_ttft_ms']} | Tokens: {row['actual_total_tokens']} | Cost: {row['estimated_cost_usd']}"
+            
+            with st.expander(header_text, expanded=False):
+                # 显示基本信息
+                st.markdown(f"**请求ID:** `{row['request_id']}`")
+                
+                # 在expander内显示详细信息
+                show_request_details(storage, row['request_id'])
     else:
         st.info("暂无日志数据")
     
