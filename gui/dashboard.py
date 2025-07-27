@@ -318,21 +318,27 @@ def main():
         
         # 检查是否选择了行
         selected_rows = grid_response['selected_rows']
+        
+        # AgGrid通常返回一个DataFrame，我们需要正确处理
         if selected_rows is not None and len(selected_rows) > 0:
-            # Debug: 查看返回的数据结构
-            st.write("Debug - selected_rows type:", type(selected_rows))
-            st.write("Debug - selected_rows content:", selected_rows)
-            
-            # 尝试不同的访问方式
             try:
-                if isinstance(selected_rows, list) and len(selected_rows) > 0:
+                # 如果selected_rows是DataFrame
+                if hasattr(selected_rows, 'iloc'):
+                    selected_request_id = selected_rows.iloc[0]['request_id']
+                # 如果是列表
+                elif isinstance(selected_rows, list):
                     selected_row = selected_rows[0]
                     if isinstance(selected_row, dict):
                         selected_request_id = selected_row['request_id']
                     else:
-                        # 如果是DataFrame行，转换为字典
-                        selected_request_id = selected_row.to_dict()['request_id']
+                        # pandas Series
+                        selected_request_id = selected_row['request_id']
+                # 如果是字典
+                elif isinstance(selected_rows, dict):
+                    selected_request_id = selected_rows['request_id']
                 else:
+                    st.error(f"Unexpected data type: {type(selected_rows)}")
+                    st.write("Data:", selected_rows)
                     selected_request_id = None
                 
                 if selected_request_id:
@@ -343,9 +349,10 @@ def main():
                     
             except Exception as e:
                 st.error(f"Error accessing selected row data: {e}")
-                st.write("Available keys in grid_response:", list(grid_response.keys()))
-                if selected_rows is not None:
-                    st.write("Selected rows data structure:", selected_rows)
+                st.write("Debug info:")
+                st.write("- Type:", type(selected_rows))
+                st.write("- Content:", selected_rows)
+                st.write("- Available grid_response keys:", list(grid_response.keys()))
     else:
         st.info("暂无日志数据")
     
