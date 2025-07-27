@@ -278,25 +278,9 @@ def main():
     recent_df = log_df.tail(20).reset_index(drop=True)
     
     if not recent_df.empty:
-        st.markdown("**点击表格行查看详情：**")
-        
-        # 添加CSS隐藏选择列
-        st.markdown("""
-        <style>
-        .stDataFrame [data-testid="column-0"] {
-            display: none;
-        }
-        .stDataFrame [data-testid="stCheckbox"] {
-            display: none;
-        }
-        .stDataFrame th:first-child, .stDataFrame td:first-child {
-            display: none;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        
-        # 使用可选择行的数据框
-        event = st.dataframe(
+        # 显示表格（仅用于查看）
+        st.markdown("**请求列表：**")
+        st.dataframe(
             recent_df, 
             use_container_width=True, 
             height=400,
@@ -310,20 +294,35 @@ def main():
                 "actual_total_tokens": "Tokens",
                 "estimated_cost_usd": "成本"
             },
-            on_select="rerun",
-            selection_mode="single-row",
             hide_index=True
         )
         
-        # 检查是否有选择的行
-        if event.selection and event.selection.rows:
-            selected_row_idx = event.selection.rows[0]
-            selected_request_id = recent_df.iloc[selected_row_idx]['request_id']
+        # 使用单选按钮选择要查看详情的请求
+        st.markdown("**选择请求查看详情：**")
+        
+        # 创建单选选项
+        request_options = []
+        for idx, row in recent_df.iterrows():
+            success_icon = "✅" if row['success'] else "❌"
+            option_text = f"{success_icon} {row['timestamp']} - {row['model']} - {row['provider']} (TTFT: {row['estimated_ttft_ms']}, Tokens: {row['actual_total_tokens']})"
+            request_options.append((row['request_id'], option_text))
+        
+        # 使用radio选择
+        if request_options:
+            selected_tuple = st.radio(
+                "请选择：",
+                options=request_options,
+                format_func=lambda x: x[1],
+                key="request_radio",
+                index=0
+            )
             
-            # 显示选中请求的详情
-            st.markdown("---")
-            st.markdown(f"### 🔍 请求详情 - {selected_request_id}")
-            show_request_details(storage, selected_request_id)
+            selected_request_id = selected_tuple[0] if selected_tuple else None
+            
+            if selected_request_id:
+                st.markdown("---")
+                st.markdown(f"### 🔍 请求详情 - {selected_request_id}")
+                show_request_details(storage, selected_request_id)
     else:
         st.info("暂无日志数据")
     
