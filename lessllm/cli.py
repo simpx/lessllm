@@ -5,6 +5,8 @@ Command line interface for LessLLM
 import argparse
 import sys
 import os
+import subprocess
+import time
 from pathlib import Path
 from .config import configure
 from .server import start_server
@@ -21,6 +23,9 @@ def main():
     server_parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
     server_parser.add_argument("--config", help="Path to configuration file")
     server_parser.add_argument("--workers", type=int, default=1, help="Number of worker processes")
+    server_parser.add_argument("--gui-port", type=int, default=8501, help="Port to run the GUI on")
+    server_parser.add_argument("--gui-host", default="localhost", help="Host to run the GUI on")
+    server_parser.add_argument("--no-gui", action="store_true", help="Disable GUI dashboard (GUI is enabled by default)")
     
     # test命令
     test_parser = subparsers.add_parser("test", help="Test proxy connectivity")
@@ -29,6 +34,11 @@ def main():
     # init命令
     init_parser = subparsers.add_parser("init", help="Initialize configuration file")
     init_parser.add_argument("--output", default="lessllm.yaml", help="Output configuration file")
+    
+    # gui命令（独立模式）
+    gui_parser = subparsers.add_parser("gui", help="Start the analytics dashboard GUI only")
+    gui_parser.add_argument("--port", type=int, default=8501, help="Port to run the GUI on")
+    gui_parser.add_argument("--host", default="localhost", help="Host to run the GUI on")
     
     args = parser.parse_args()
     
@@ -42,6 +52,52 @@ def main():
         test_connectivity(args)
     elif args.command == "init":
         init_config(args)
+    elif args.command == "gui":
+        run_gui(args)
+
+
+def start_gui_process(host, port):
+    """启动 GUI 进程"""
+    try:
+        # 获取GUI脚本路径
+        gui_script = os.path.join(os.path.dirname(__file__), "..", "gui", "dashboard.py")
+        gui_script = os.path.abspath(gui_script)
+        
+        if not os.path.exists(gui_script):
+            print(f"Warning: GUI script not found at {gui_script}, GUI will not be started")
+            return None
+        
+        # 构建streamlit命令
+        cmd = [
+            sys.executable, "-m", "streamlit", "run",
+            gui_script,
+            "--server.port", str(port),
+            "--server.address", host,
+            "--server.headless", "true",  # 禁用自动打开浏览器
+            "--logger.level", "error"     # 减少日志输出
+        ]
+        
+        # 启动进程，重定向输出减少噪音
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid if hasattr(os, 'setsid') else None
+        )
+        
+        # 等待一小段时间确保 GUI 启动
+        time.sleep(3)
+        
+        # 检查进程是否还在运行
+        if process.poll() is None:
+            return process
+        else:
+            print("Warning: GUI process failed to start")
+            return None
+            
+    except Exception as e:
+        print(f"Warning: Failed to start GUI: {e}")
+        return None
 
 
 def run_server(args):
@@ -56,20 +112,57 @@ def run_server(args):
         else:
             configure()
         
-        print(f"Starting LessLLM server on {args.host}:{args.port}")
-        print("Press Ctrl+C to stop")
+        # 启动 GUI（如果未禁用）
+        gui_process = None
+        if not getattr(args, 'no_gui', False):
+            gui_host = getattr(args, 'gui_host', 'localhost')
+            gui_port = getattr(args, 'gui_port', 8501)
+            gui_process = start_gui_process(gui_host, gui_port)
         
-        start_server(
-            host=args.host,
-            port=args.port,
-            workers=args.workers
-        )
+        print(f"Starting LessLLM server on {args.host}:{args.port}")
+        if not getattr(args, 'no_gui', False):
+            gui_host = getattr(args, 'gui_host', 'localhost')
+            gui_port = getattr(args, 'gui_port', 8501)
+            print(f"GUI dashboard available at http://{gui_host}:{gui_port}")
+        print("Press Ctrl+C to stop")
+        print()  # 空行分隔
+        
+        try:
+            start_server(
+                host=args.host,
+                port=args.port,
+                workers=args.workers
+            )
+        finally:
+            # 确保 GUI 进程被正确关闭
+            if gui_process:
+                terminate_gui_process(gui_process)
         
     except KeyboardInterrupt:
         print("\nServer stopped")
+        if gui_process:
+            terminate_gui_process(gui_process)
     except Exception as e:
         print(f"Error starting server: {e}")
+        if gui_process:
+            terminate_gui_process(gui_process)
         sys.exit(1)
+
+
+def terminate_gui_process(process):
+    """安全地终止 GUI 进程"""
+    try:
+        if process and process.poll() is None:
+            # 尝试优雅终止
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # 如果优雅终止失败，强制杀死
+                process.kill()
+                process.wait()
+    except Exception as e:
+        print(f"Warning: Error terminating GUI process: {e}")
 
 
 def test_connectivity(args):
@@ -98,6 +191,45 @@ def test_connectivity(args):
             
     except Exception as e:
         print(f"Error testing connectivity: {e}")
+        sys.exit(1)
+
+
+def run_gui(args):
+    """运行GUI"""
+    try:
+        import subprocess
+        import sys
+        import os
+        
+        # 获取GUI脚本路径
+        gui_script = os.path.join(os.path.dirname(__file__), "..", "gui", "dashboard.py")
+        gui_script = os.path.abspath(gui_script)
+        
+        if not os.path.exists(gui_script):
+            print(f"Error: GUI script not found at {gui_script}")
+            sys.exit(1)
+        
+        # 构建streamlit命令
+        cmd = [
+            sys.executable, "-m", "streamlit", "run",
+            gui_script,
+            "--server.port", str(args.port),
+            "--server.address", args.host
+        ]
+        
+        print(f"Starting LessLLM Analytics Dashboard on {args.host}:{args.port}")
+        print("Press Ctrl+C to stop")
+        
+        # 运行streamlit
+        subprocess.run(cmd, check=True)
+        
+    except KeyboardInterrupt:
+        print("\nGUI stopped")
+    except subprocess.CalledProcessError as e:
+        print(f"Error running GUI: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error starting GUI: {e}")
         sys.exit(1)
 
 

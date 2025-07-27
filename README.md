@@ -54,6 +54,14 @@ export ANTHROPIC_API_KEY="your-claude-key"
 lessllm server --config lessllm.yaml --port 8000
 ```
 
+### Start the Analytics Dashboard GUI
+
+```bash
+# Start GUI (requires optional GUI dependencies)
+pip install -e .[gui]
+lessllm gui --port 8501 --host localhost
+```
+
 ### Use with OpenAI Client
 
 ```python
@@ -122,6 +130,7 @@ analysis:
 - ✅ CLI interface
 - ✅ Example configurations
 - ✅ Test client scripts
+- ✅ Analytics dashboard GUI
 
 ## Next Steps
 
@@ -131,7 +140,6 @@ analysis:
 - Performance optimizations
 
 📋 **Planned:**
-- Web dashboard for usage analytics
 - More LLM provider integrations
 - Advanced caching strategies
 - Batch request optimization
