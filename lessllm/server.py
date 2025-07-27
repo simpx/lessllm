@@ -505,13 +505,13 @@ async def handle_openai_to_claude_streaming_conversion(
                     full_response["choices"][0]["message"]["content"] += openai_chunk["choices"][0]["delta"]["content"]
                 
                 # 返回OpenAI格式的流式数据
-                yield f"data: {json.dumps(openai_chunk)}\\n\\n"
+                yield f"data: {json.dumps(openai_chunk)}\n\n"
         
-        yield "data: [DONE]\\n\\n"
+        yield "data: [DONE]\n\n"
         
     except Exception as e:
         logger.error(f"OpenAI to Claude streaming conversion failed: {e}")
-        yield f'data: {{"error": "{str(e)}"}}\\n\\n'
+        yield f'data: {{"error": "{str(e)}"}}\n\n'
     
     # 异步记录日志
     if storage:
@@ -546,9 +546,9 @@ async def handle_claude_to_openai_streaming_conversion(
                         full_response_content += delta.get("text", "")
                 
                 # 返回Claude格式的流式数据
-                yield f"data: {json.dumps(claude_chunk)}\\n\\n"
+                yield f"data: {json.dumps(claude_chunk)}\n\n"
         
-        yield "data: [DONE]\\n\\n"
+        yield "data: [DONE]\n\n"
         
     except Exception as e:
         logger.error(f"Claude to OpenAI streaming conversion failed: {e}")
@@ -559,7 +559,7 @@ async def handle_claude_to_openai_streaming_conversion(
                 "message": str(e)
             }
         }
-        yield f'data: {json.dumps(error_chunk)}\\n\\n'
+        yield f'data: {json.dumps(error_chunk)}\n\n'
     
     # 异步记录日志
     if storage:
