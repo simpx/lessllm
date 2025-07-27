@@ -1,0 +1,677 @@
+"""
+Streamlit app for LessLLM analytics dashboard
+"""
+
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+import sys
+import os
+import json
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
+
+# 添加项目根目录到Python路径
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+
+from lessllm.logging.storage import LogStorage
+from lessllm.config import get_config
+
+def init_storage():
+    """初始化存储连接"""
+    try:
+        config = get_config()
+        db_path = config.logging.storage.get("db_path", "./lessllm_logs.db")
+        return LogStorage(db_path)
+    except Exception as e:
+        st.error(f"Failed to initialize storage: {e}")
+        return None
+
+def load_data(storage, start_date, end_date):
+    """加载指定日期范围的数据"""
+    try:
+        # 构建SQL查询
+        sql = """
+            SELECT * FROM api_calls 
+            WHERE timestamp >= ? AND timestamp <= ?
+        """
+        params = [start_date, end_date]
+        
+        # 执行查询
+        data = storage.query(sql, params)
+        return pd.DataFrame(data)
+    except Exception as e:
+        st.error(f"Failed to load data: {e}")
+        return pd.DataFrame()
+
+def format_currency(value):
+    """格式化货币显示"""
+    if pd.isna(value) or value == 0:
+        return "N/A"
+    elif value < 0.0001:
+        return f"${value:.6f}"
+    else:
+        return f"${value:.4f}"
+
+def format_time_ms(value):
+    """格式化时间显示"""
+    if pd.isna(value):
+        return "N/A"
+    elif value < 1:
+        return f"{value:.2f}ms"
+    else:
+        return f"{value:.0f}ms"
+
+def format_tokens(value):
+    """格式化token数量显示"""
+    if pd.isna(value) or value == 0:
+        return "0"
+    elif value is None:
+        return "N/A"
+    else:
+        return f"{int(value):,}"
+
+def format_cache_rate(value):
+    """格式化缓存命中率显示"""
+    if pd.isna(value) or value is None:
+        return "N/A"
+    else:
+        return f"{value:.1%}"
+
+def format_tokens_per_second(value):
+    """格式化吞吐量显示"""
+    if pd.isna(value) or value is None:
+        return "N/A"
+    else:
+        return f"{value:.1f} t/s"
+
+def format_success_status(value):
+    """格式化成功状态显示"""
+    if pd.isna(value):
+        return "Unknown"
+    elif value:
+        return "✅"
+    else:
+        return "❌"
+
+def show_request_details(storage, request_id):
+    """显示请求详情"""
+    # 查询完整的请求详情
+    detail_sql = "SELECT * FROM api_calls WHERE request_id = ?"
+    detail_result = storage.query(detail_sql, [request_id])
+    
+    if detail_result:
+        detail = detail_result[0]
+        
+        # 基本信息
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("请求ID", detail['request_id'])
+        with col2:
+            st.metric("提供商", detail['provider'])
+        with col3:
+            st.metric("模型", detail['model'])
+        with col4:
+            st.metric("状态", "✅ 成功" if detail['success'] else "❌ 失败")
+        
+        if detail['proxy_used']:
+            st.info(f"**代理:** {detail['proxy_used']}")
+        if detail['error_message']:
+            st.error(f"**错误:** {detail['error_message']}")
+        
+        # 详细数据展示
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 请求数据", "📥 响应数据", "🌐 HTTP 详情", "📊 性能指标", "💰 成本分析"])
+        
+        with tab1:
+            st.markdown("**原始请求数据:**")
+            if detail['raw_request']:
+                try:
+                    request_data = json.loads(detail['raw_request'])
+                    st.json(request_data)
+                except:
+                    st.text(detail['raw_request'])
+            else:
+                st.info("无请求数据")
+        
+        with tab2:
+            st.markdown("**原始响应数据:**")
+            if detail['raw_response']:
+                try:
+                    response_data = json.loads(detail['raw_response'])
+                    st.json(response_data)
+                except:
+                    st.text(detail['raw_response'])
+            else:
+                st.info("无响应数据")
+        
+        with tab3:
+            st.markdown("**HTTP 请求详情:**")
+            
+            # 基本请求信息
+            req_col1, req_col2 = st.columns(2)
+            with req_col1:
+                st.metric("请求方法", detail.get('request_method', 'N/A'))
+                st.metric("客户端 IP", detail.get('client_ip', 'N/A'))
+                st.metric("状态码", detail.get('response_status_code', 'N/A'))
+            with req_col2:
+                st.metric("响应大小", f"{detail.get('response_size_bytes', 0)} bytes" if detail.get('response_size_bytes') else 'N/A')
+                st.metric("上游状态码", detail.get('upstream_status_code', 'N/A'))
+                st.metric("上游 URL", detail.get('upstream_url', 'N/A'))
+            
+            # 请求头
+            st.markdown("**请求头:**")
+            if detail.get('request_headers'):
+                try:
+                    request_headers = json.loads(detail['request_headers']) if isinstance(detail['request_headers'], str) else detail['request_headers']
+                    st.json(request_headers)
+                except:
+                    st.text(str(detail['request_headers']))
+            else:
+                st.info("无请求头数据")
+            
+            # 响应头
+            st.markdown("**响应头:**")
+            if detail.get('response_headers'):
+                try:
+                    response_headers = json.loads(detail['response_headers']) if isinstance(detail['response_headers'], str) else detail['response_headers']
+                    st.json(response_headers)
+                except:
+                    st.text(str(detail['response_headers']))
+            else:
+                st.info("无响应头数据")
+        
+        with tab4:
+            perf_col1, perf_col2 = st.columns(2)
+            with perf_col1:
+                st.metric("首字节时间 (TTFT)", format_time_ms(detail['estimated_ttft_ms']))
+                st.metric("每token时间 (TPOT)", format_time_ms(detail['estimated_tpot_ms']))
+            with perf_col2:
+                st.metric("总延迟", format_time_ms(detail['estimated_total_latency_ms']))
+                st.metric("吞吐量", f"{detail['estimated_tokens_per_second']:.1f} tokens/s" if detail['estimated_tokens_per_second'] else "N/A")
+            
+            # 缓存信息
+            if detail['estimated_cache_hit_rate'] is not None:
+                cache_col1, cache_col2 = st.columns(2)
+                with cache_col1:
+                    st.metric("估算缓存命中率", f"{detail['estimated_cache_hit_rate']:.1%}")
+                    st.metric("估算缓存Token", detail['estimated_cached_tokens'])
+                with cache_col2:
+                    if detail['actual_cache_hit_rate'] is not None:
+                        st.metric("实际缓存命中率", f"{detail['actual_cache_hit_rate']:.1%}")
+                        st.metric("实际缓存Token", detail['actual_cached_tokens'])
+        
+        with tab5:
+            cost_col1, cost_col2 = st.columns(2)
+            with cost_col1:
+                st.metric("估算成本", format_currency(detail['estimated_cost_usd']))
+                st.metric("输入Token", detail['actual_prompt_tokens'] or "N/A")
+            with cost_col2:
+                st.metric("输出Token", detail['actual_completion_tokens'] or "N/A")
+                st.metric("总Token", detail['actual_total_tokens'] or "N/A")
+    else:
+        st.error("找不到请求详情")
+
+def main():
+    st.set_page_config(
+        page_title="LessLLM Analytics Dashboard",
+        page_icon="📊",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+    
+    # 隐藏主菜单和页脚以节省空间
+    hide_streamlit_style = """
+        <style>
+        #MainMenu {visibility: hidden;}
+        footer {visibility: hidden;}
+        header {visibility: hidden;}
+        [data-testid="stSidebar"] {
+            background-color: #f0f2f6;
+        }
+        [data-testid="stMetricValue"] {
+            font-size: 16px;
+        }
+        [data-testid="stMetricLabel"] {
+            font-size: 14px;
+        }
+        </style>
+    """
+    st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+    
+    st.markdown("<h1 style='text-align: center; margin-bottom: 10px;'>📊 LessLLM Analytics</h1>", unsafe_allow_html=True)
+    
+    # 初始化存储
+    storage = init_storage()
+    if not storage:
+        st.error("无法连接到数据库，请检查配置")
+        return
+    
+    # 侧边栏过滤器
+    with st.sidebar:
+        st.header("过滤器")
+        
+        # 日期范围选择
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=30)
+        
+        start_date = st.date_input("开始日期", start_date)
+        end_date = st.date_input("结束日期", end_date)
+        
+        # 转换为datetime格式
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+        end_datetime = datetime.combine(end_date, datetime.max.time())
+        
+        # 刷新按钮
+        refresh = st.button("🔄 刷新数据")
+    
+    # 加载数据
+    with st.spinner("正在加载数据..."):
+        df = load_data(storage, start_datetime, end_datetime)
+    
+    if df.empty:
+        st.info("所选日期范围内没有数据")
+        return
+    
+    # 显示关键指标
+    st.markdown("### 关键指标")
+    
+    # 计算关键指标
+    total_requests = len(df)
+    successful_requests = len(df[df['success'] == True])
+    success_rate = (successful_requests / total_requests * 100) if total_requests > 0 else 0
+    total_cost = df['estimated_cost_usd'].sum()
+    
+    # Token统计
+    total_input_tokens = df['actual_prompt_tokens'].sum()
+    total_output_tokens = df['actual_completion_tokens'].sum()  
+    total_tokens = df['actual_total_tokens'].sum()
+    total_cached_tokens = df['actual_cached_tokens'].sum()
+    
+    # 性能统计 (只统计成功的请求)
+    success_df = df[df['success'] == True]
+    avg_ttft = success_df['estimated_ttft_ms'].mean() if len(success_df) > 0 else 0
+    avg_tpot = success_df['estimated_tpot_ms'].mean() if len(success_df) > 0 else 0
+    avg_throughput = success_df['estimated_tokens_per_second'].mean() if len(success_df) > 0 else 0
+    avg_cache_rate = success_df['actual_cache_hit_rate'].mean() if len(success_df) > 0 else 0
+    
+    # 第一行：基础指标
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("总请求数", total_requests)
+    col2.metric("成功率", f"{success_rate:.1f}%")
+    col3.metric("成功数", successful_requests)
+    col4.metric("总成本", format_currency(total_cost))
+    col5.metric("总Token", format_tokens(total_tokens))
+    
+    # 第二行：Token分析
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("输入Token", format_tokens(total_input_tokens))
+    col2.metric("输出Token", format_tokens(total_output_tokens))
+    col3.metric("缓存Token", format_tokens(total_cached_tokens))
+    col4.metric("平均缓存率", format_cache_rate(avg_cache_rate) if not pd.isna(avg_cache_rate) else "N/A")
+    col5.metric("缓存节省", format_currency(total_cached_tokens * 0.0001) if total_cached_tokens > 0 else "$0.00")
+    
+    # 第三行：性能指标
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("平均TTFT", format_time_ms(avg_ttft) if not pd.isna(avg_ttft) else "N/A")
+    col2.metric("平均TPOT", format_time_ms(avg_tpot) if not pd.isna(avg_tpot) else "N/A")
+    col3.metric("平均吞吐量", format_tokens_per_second(avg_throughput) if not pd.isna(avg_throughput) else "N/A")
+    col4.metric("Provider数", len(df['provider'].unique()))
+    col5.metric("模型数", len(df['model'].unique()))
+    
+    # 数据可视化部分
+    if len(success_df) > 0:
+        st.markdown("### 📊 数据分析")
+        
+        viz_col1, viz_col2 = st.columns(2)
+        
+        with viz_col1:
+            # Provider使用分布
+            if 'provider' in success_df.columns:
+                provider_counts = success_df['provider'].value_counts()
+                if len(provider_counts) > 0:
+                    fig_provider = px.pie(
+                        values=provider_counts.values,
+                        names=provider_counts.index,
+                        title="Provider使用分布"
+                    )
+                    fig_provider.update_layout(height=300)
+                    st.plotly_chart(fig_provider, use_container_width=True)
+        
+        with viz_col2:
+            # 成本分布按模型
+            if 'model' in success_df.columns and 'estimated_cost_usd' in success_df.columns:
+                model_costs = success_df.groupby('model')['estimated_cost_usd'].sum().sort_values(ascending=False)
+                if len(model_costs) > 0:
+                    fig_cost = px.bar(
+                        x=model_costs.index,
+                        y=model_costs.values,
+                        title="成本分布（按模型）",
+                        labels={'x': '模型', 'y': '成本 (USD)'}
+                    )
+                    fig_cost.update_layout(height=300)
+                    st.plotly_chart(fig_cost, use_container_width=True)
+        
+        # Token使用趋势（如果有足够的数据）
+        if len(success_df) > 1 and 'timestamp' in success_df.columns:
+            viz_col3, viz_col4 = st.columns(2)
+            
+            with viz_col3:
+                # Token使用趋势
+                time_df = success_df.copy()
+                time_df['timestamp'] = pd.to_datetime(time_df['timestamp'])
+                time_df = time_df.sort_values('timestamp')
+                
+                if len(time_df) > 1:
+                    fig_tokens = px.line(
+                        time_df,
+                        x='timestamp',
+                        y='actual_total_tokens',
+                        title="Token使用趋势",
+                        labels={'timestamp': '时间', 'actual_total_tokens': 'Token数量'}
+                    )
+                    fig_tokens.update_layout(height=300)
+                    st.plotly_chart(fig_tokens, use_container_width=True)
+            
+            with viz_col4:
+                # 性能趋势 (TTFT)
+                if 'estimated_ttft_ms' in time_df.columns:
+                    fig_perf = px.line(
+                        time_df,
+                        x='timestamp',
+                        y='estimated_ttft_ms',
+                        title="TTFT性能趋势",
+                        labels={'timestamp': '时间', 'estimated_ttft_ms': 'TTFT (ms)'}
+                    )
+                    fig_perf.update_layout(height=300)
+                    st.plotly_chart(fig_perf, use_container_width=True)
+    
+    # 最近日志
+    st.markdown("### 最近请求")
+    
+    # 选择要显示的列 - 增加更多有用信息
+    display_columns = [
+        'timestamp', 'request_id', 'provider', 'model', 'endpoint', 'success',
+        'actual_prompt_tokens', 'actual_completion_tokens', 'actual_total_tokens',
+        'actual_cached_tokens', 'actual_cache_hit_rate',
+        'estimated_ttft_ms', 'estimated_tpot_ms', 'estimated_tokens_per_second',
+        'estimated_cost_usd'
+    ]
+    
+    # 格式化数据显示
+    log_df = df[display_columns].copy()
+    log_df['timestamp'] = pd.to_datetime(log_df['timestamp']).dt.strftime('%m-%d %H:%M:%S')
+    
+    # 格式化各种数据类型
+    log_df['success'] = log_df['success'].apply(format_success_status)
+    log_df['actual_prompt_tokens'] = log_df['actual_prompt_tokens'].apply(format_tokens)
+    log_df['actual_completion_tokens'] = log_df['actual_completion_tokens'].apply(format_tokens)
+    log_df['actual_total_tokens'] = log_df['actual_total_tokens'].apply(format_tokens)
+    log_df['actual_cached_tokens'] = log_df['actual_cached_tokens'].apply(format_tokens)
+    log_df['actual_cache_hit_rate'] = log_df['actual_cache_hit_rate'].apply(format_cache_rate)
+    log_df['estimated_ttft_ms'] = log_df['estimated_ttft_ms'].apply(format_time_ms)
+    log_df['estimated_tpot_ms'] = log_df['estimated_tpot_ms'].apply(format_time_ms)
+    log_df['estimated_tokens_per_second'] = log_df['estimated_tokens_per_second'].apply(format_tokens_per_second)
+    log_df['estimated_cost_usd'] = log_df['estimated_cost_usd'].apply(format_currency)
+    
+    # 显示最近20条记录
+    recent_df = log_df.tail(20).reset_index(drop=True)
+    
+    if not recent_df.empty:
+        st.markdown("**请求列表（点击行查看详情）：**")
+        
+        # 配置AgGrid
+        gb = GridOptionsBuilder.from_dataframe(recent_df)
+        gb.configure_pagination(paginationAutoPageSize=True)
+        gb.configure_side_bar()
+        gb.configure_selection(
+            selection_mode="single",
+            use_checkbox=False,  # 关键：不使用复选框
+            pre_selected_rows=[]
+        )
+        
+        # 配置列显示 - 优化列宽和显示名称
+        gb.configure_column("timestamp", header_name="时间", width=100)
+        gb.configure_column("request_id", header_name="请求ID", width=120)
+        gb.configure_column("provider", header_name="Provider", width=80)
+        gb.configure_column("model", header_name="模型", width=140)
+        gb.configure_column("endpoint", header_name="端点", width=80)
+        gb.configure_column("success", header_name="状态", width=60)
+        
+        # Token相关列
+        gb.configure_column("actual_prompt_tokens", header_name="输入Token", width=90)
+        gb.configure_column("actual_completion_tokens", header_name="输出Token", width=90)
+        gb.configure_column("actual_total_tokens", header_name="总Token", width=80)
+        gb.configure_column("actual_cached_tokens", header_name="缓存Token", width=90)
+        gb.configure_column("actual_cache_hit_rate", header_name="缓存率", width=80)
+        
+        # 性能指标列
+        gb.configure_column("estimated_ttft_ms", header_name="TTFT", width=80)
+        gb.configure_column("estimated_tpot_ms", header_name="TPOT", width=80)
+        gb.configure_column("estimated_tokens_per_second", header_name="吞吐量", width=80)
+        gb.configure_column("estimated_cost_usd", header_name="成本", width=80)
+        
+        gridOptions = gb.build()
+        
+        # 显示AgGrid表格
+        grid_response = AgGrid(
+            recent_df,
+            gridOptions=gridOptions,
+            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+            update_mode=GridUpdateMode.SELECTION_CHANGED,
+            fit_columns_on_grid_load=True,
+            theme="streamlit",
+            height=400,
+            width='100%',
+            reload_data=False
+        )
+        
+        # 检查是否选择了行
+        selected_rows = grid_response['selected_rows']
+        
+        # AgGrid通常返回一个DataFrame，我们需要正确处理
+        if selected_rows is not None and len(selected_rows) > 0:
+            try:
+                # 如果selected_rows是DataFrame
+                if hasattr(selected_rows, 'iloc'):
+                    selected_request_id = selected_rows.iloc[0]['request_id']
+                # 如果是列表
+                elif isinstance(selected_rows, list):
+                    selected_row = selected_rows[0]
+                    if isinstance(selected_row, dict):
+                        selected_request_id = selected_row['request_id']
+                    else:
+                        # pandas Series
+                        selected_request_id = selected_row['request_id']
+                # 如果是字典
+                elif isinstance(selected_rows, dict):
+                    selected_request_id = selected_rows['request_id']
+                else:
+                    st.error(f"Unexpected data type: {type(selected_rows)}")
+                    st.write("Data:", selected_rows)
+                    selected_request_id = None
+                
+                if selected_request_id:
+                    # 直接在表格下方显示详情
+                    st.markdown("---")
+                    st.markdown(f"### 🔍 请求详情 - {selected_request_id}")
+                    show_request_details(storage, selected_request_id)
+                    
+            except Exception as e:
+                st.error(f"Error accessing selected row data: {e}")
+                st.write("Debug info:")
+                st.write("- Type:", type(selected_rows))
+                st.write("- Content:", selected_rows)
+                st.write("- Available grid_response keys:", list(grid_response.keys()))
+    else:
+        st.info("暂无日志数据")
+    
+    # SQL 查询功能
+    st.markdown("### SQL 查询")
+    
+    # 创建展开式 SQL 查询区域
+    with st.expander("🔍 自定义 SQL 查询", expanded=False):
+        
+        # 预定义的常用查询
+        st.markdown("**常用查询模板：**")
+        
+        template_options = {
+            "选择模板...": "",
+            "Token分析 - 详细统计": """
+SELECT 
+    model,
+    provider,
+    COUNT(*) as request_count,
+    SUM(actual_prompt_tokens) as total_input_tokens,
+    SUM(actual_completion_tokens) as total_output_tokens,
+    SUM(actual_total_tokens) as total_tokens,
+    SUM(actual_cached_tokens) as total_cached_tokens,
+    AVG(actual_cache_hit_rate) as avg_cache_rate,
+    SUM(estimated_cost_usd) as total_cost_usd,
+    AVG(actual_total_tokens) as avg_tokens_per_request
+FROM api_calls 
+WHERE success = true 
+GROUP BY model, provider 
+ORDER BY total_tokens DESC""",
+            "性能分析 - 按模型": """
+SELECT 
+    model,
+    COUNT(*) as request_count,
+    AVG(estimated_ttft_ms) as avg_ttft_ms,
+    AVG(estimated_tpot_ms) as avg_tpot_ms,
+    AVG(estimated_total_latency_ms) as avg_latency_ms,
+    AVG(estimated_tokens_per_second) as avg_throughput,
+    SUM(estimated_cost_usd) as total_cost_usd
+FROM api_calls 
+WHERE success = true 
+GROUP BY model 
+ORDER BY request_count DESC""",
+            "缓存效率分析": """
+SELECT 
+    model,
+    provider,
+    COUNT(*) as request_count,
+    AVG(actual_cache_hit_rate) as avg_cache_rate,
+    SUM(actual_cached_tokens) as total_cached_tokens,
+    SUM(actual_cached_tokens) * 0.0001 as estimated_cache_savings,
+    AVG(estimated_ttft_ms) as avg_ttft_ms
+FROM api_calls 
+WHERE success = true AND actual_cache_hit_rate IS NOT NULL
+GROUP BY model, provider 
+ORDER BY avg_cache_rate DESC""",
+            "成本效率排行": """
+SELECT 
+    model,
+    provider,
+    COUNT(*) as request_count,
+    SUM(estimated_cost_usd) as total_cost,
+    SUM(actual_total_tokens) as total_tokens,
+    (SUM(estimated_cost_usd) / SUM(actual_total_tokens) * 1000) as cost_per_1k_tokens,
+    AVG(estimated_cost_usd) as avg_cost_per_request
+FROM api_calls 
+WHERE success = true AND actual_total_tokens > 0
+GROUP BY model, provider 
+ORDER BY cost_per_1k_tokens ASC""",
+            "最近活动": """
+SELECT 
+    timestamp,
+    provider,
+    model,
+    endpoint,
+    success,
+    actual_prompt_tokens,
+    actual_completion_tokens,
+    actual_cached_tokens,
+    estimated_ttft_ms,
+    estimated_cost_usd
+FROM api_calls 
+ORDER BY timestamp DESC 
+LIMIT 50"""
+        }
+        
+        selected_template = st.selectbox("选择查询模板", list(template_options.keys()))
+        
+        # 查询输入框
+        if selected_template != "选择模板...":
+            default_query = template_options[selected_template]
+        else:
+            default_query = "SELECT * FROM api_calls LIMIT 10"
+            
+        sql_query = st.text_area(
+            "SQL 查询语句",
+            value=default_query,
+            height=150,
+            help="可以查询 api_calls 表中的所有数据。支持标准 SQL 语法。"
+        )
+        
+        # 执行查询按钮
+        col1, col2 = st.columns([1, 4])
+        
+        with col1:
+            execute_query = st.button("▶️ 执行查询", type="primary")
+        
+        with col2:
+            if st.button("📊 表结构说明"):
+                st.info("""
+                **api_calls 表主要字段：**
+                - timestamp: 请求时间
+                - request_id: 请求ID
+                - provider: 提供商 (openai, claude等)
+                - model: 模型名称
+                - success: 是否成功
+                - estimated_ttft_ms: 估算首字节时间
+                - estimated_tpot_ms: 估算每token时间
+                - estimated_total_latency_ms: 估算总延迟
+                - actual_total_tokens: 实际token数
+                - estimated_cost_usd: 估算成本
+                - actual_cache_hit_rate: 实际缓存命中率
+                - proxy_used: 使用的代理
+                """)
+        
+        # 执行查询
+        if execute_query and sql_query.strip():
+            try:
+                with st.spinner("正在执行查询..."):
+                    # 安全检查 - 只允许 SELECT 语句
+                    if not sql_query.strip().upper().startswith('SELECT'):
+                        st.error("为了安全起见，只允许执行 SELECT 查询语句")
+                    else:
+                        # 执行查询
+                        query_result = storage.query(sql_query.strip())
+                        
+                        if query_result:
+                            result_df = pd.DataFrame(query_result)
+                            
+                            # 显示结果统计
+                            st.success(f"查询成功！返回 {len(result_df)} 行，{len(result_df.columns)} 列")
+                            
+                            # 显示结果
+                            st.dataframe(
+                                result_df,
+                                use_container_width=True,
+                                height=400
+                            )
+                            
+                            # 下载选项
+                            if len(result_df) > 0:
+                                csv = result_df.to_csv(index=False)
+                                st.download_button(
+                                    label="📥 下载 CSV",
+                                    data=csv,
+                                    file_name=f"lessllm_query_result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                                    mime="text/csv"
+                                )
+                        else:
+                            st.info("查询执行成功，但没有返回数据")
+                            
+            except Exception as e:
+                st.error(f"查询执行失败：{str(e)}")
+                # 提供一些常见错误的解决建议
+                if "no such table" in str(e).lower():
+                    st.warning("表不存在。请确保数据库中有数据，或检查表名是否正确。")
+                elif "syntax error" in str(e).lower():
+                    st.warning("SQL 语法错误。请检查查询语句的语法。")
+
+if __name__ == "__main__":
+    main()
