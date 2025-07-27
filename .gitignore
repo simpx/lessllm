@@ -81,3 +81,8 @@ logs/
 # Documentation
 site/
 docs/_build/
+
+# Temporary files and archives
+*.zip
+*.tar.gz
+view_db.py
