@@ -85,4 +85,15 @@ docs/_build/
 # Temporary files and archives
 *.zip
 *.tar.gz
+*.sha256
 view_db.py
+update_token_data.py
+clear_data.py
+
+# Test scripts (keep in tests/ directory only)
+test_*.sh
+test_*.py
+!/tests/**
+
+# Build artifacts
+release.sh
